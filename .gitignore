@@ -1,0 +1,38 @@
+# Independent distribution checkout and local worktrees
+/.repos/
+/.worktrees/
+
+# Local credentials and machine-specific settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.aws/
+.ssh/
+/.codex/
+/.agents/
+
+# Dependencies, generated output, caches, and local data
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+dist/
+build/
+coverage/
+.cache/
+*.log
+*.sqlite
+*.sqlite3
+
+# OS and editor scratch files
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
