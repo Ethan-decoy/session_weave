@@ -1,6 +1,7 @@
 # Independent distribution checkout and local worktrees
 /.repos/
 /.worktrees/
+/.sessionweave/
 
 # Local credentials and machine-specific settings
 .env

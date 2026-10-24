@@ -1,0 +1,26 @@
+{
+  "name": "sessionweave",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "description": "Model-agnostic persistent sessions and validated context compaction",
+  "engines": { "node": ">=22" },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./file-store": { "types": "./dist/file-store.d.ts", "import": "./dist/file-store.js" },
+    "./pi": { "types": "./dist/pi.d.ts", "import": "./dist/pi.js" }
+  },
+  "files": ["dist", "examples", "docs/api.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "check": "npm run typecheck && npm test",
+    "example": "npm run build && node examples/quickstart.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}
