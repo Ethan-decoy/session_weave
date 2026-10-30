@@ -1,8 +1,11 @@
 import { RevisionConflictError } from './errors.js';
-import { emptyState, mutate } from './protocol.js';
+import { emptyState, mutate } from './session-state.js';
 import type { Mutation, SessionState, SessionStore } from './types.js';
 
 export class MemoryStore implements SessionStore {
+  readonly supportsNativeState = true;
+  readonly supportsWorkingMemoryState = true;
+  readonly supportsWorkingMemoryProvenance = true;
   private readonly states = new Map<string, SessionState>();
   async load(id: string): Promise<SessionState | null> { return structuredClone(this.states.get(id) ?? null); }
   async commit(id: string, revision: number, mutation: Mutation, signal?: AbortSignal): Promise<SessionState> {

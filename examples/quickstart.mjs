@@ -23,6 +23,7 @@ for (let index = 0; index < 8; index++) await session.append([
   { id: `reply-${index}`, role: 'assistant', text: `Public reply ${index}: ${'result '.repeat(24)}` },
 ]);
 const context = await session.prepare({
+  strategy: 'portable', // Explicit generic strategy for this offline demonstration.
   model: { id: 'offline-demo-target', contextWindow: 3000, countTokens: estimateInputTokens }, outputReserveTokens: 300,
 });
 const original = await session.read({ sessionId: session.sessionId, startId: 'user-0', endId: 'reply-0' });

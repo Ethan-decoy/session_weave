@@ -1,4 +1,5 @@
 // Host supplies Pi AI complete(), authenticated models, tokenizer and its existing storage.
+// This is the explicit portable path. Native compaction uses a raw protocol adapter instead.
 // This module does not import the complete Pi Agent and never executes domain tools.
 import { SessionWeave, createJsonSummarizer } from '../dist/index.js';
 import { fromPiAssistant, piModelProfile, piUsage, toPiContext } from '../dist/pi.js';
@@ -20,9 +21,11 @@ export async function openResearchSession({ sessionId, store, summaryModel, coun
 
 export async function requestModelStep(session, {
   model, tools = [], systemPrompt = '', materials = [], outputReserveTokens,
-  countTokens, complete, signal, responseMessageId,
+  countTokens, complete, signal, responseMessageId, strategy,
 }) {
+  if (strategy !== 'portable') throw new Error('The Pi text bridge requires an explicit portable strategy; use a raw native adapter for native state.');
   const context = await session.prepare({
+    strategy,
     model: piModelProfile(model, (input) => countTokens(model, input)),
     // Remove schema-only symbols; the serialized declarations must match what is sent.
     tools: JSON.parse(JSON.stringify(tools)), systemPrompt, materials, outputReserveTokens, signal,

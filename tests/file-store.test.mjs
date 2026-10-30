@@ -32,7 +32,7 @@ test('file store restores the explicit session in a new process without replayin
   const files = pathToFileURL(path.resolve('dist/file-store.js')).href;
   const code = `import {SessionWeave} from ${JSON.stringify(module)}; import {FileStore} from ${JSON.stringify(files)};
 const s = await SessionWeave.open({sessionId:'specific',store:new FileStore(${JSON.stringify(root)}),summarizer:{summarize(){throw Error('must not summarize on restore')}}});
-const c = await s.prepare({model:{id:'restored/model',contextWindow:10000,countTokens:()=>1},outputReserveTokens:100});
+const c = await s.prepare({ strategy: 'portable',model:{id:'restored/model',contextWindow:10000,countTokens:()=>1},outputReserveTokens:100});
 console.log(JSON.stringify({status:await s.inspect(),messages:c.messages}));`;
   const restored = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8' }));
   assert.equal(restored.status.messageCount, 3);
@@ -98,12 +98,12 @@ test('checkpoint publication leaves separate immutable raw files unchanged', asy
   const rawFile = path.join(directory('checkpoint'), 'raw/u0.json');
   const bytes = await readFile(rawFile), before = await stat(rawFile);
   const counter = (input) => input.messages.length * 20;
-  const context = await session.prepare({ model: { id: 'small', contextWindow: 240, countTokens: counter }, outputReserveTokens: 40 });
+  const context = await session.prepare({ strategy: 'portable', model: { id: 'small', contextWindow: 240, countTokens: counter }, outputReserveTokens: 40 });
   assert.ok(context.checkpointId);
   assert.equal((await readdir(path.join(directory('checkpoint'), 'checkpoints'))).length, 1);
   assert.deepEqual(await readFile(rawFile), bytes);
   assert.equal((await stat(rawFile)).mtimeMs, before.mtimeMs);
   const restored = await SessionWeave.open({ sessionId: 'checkpoint', store: new FileStore(root), summarizer });
   assert.equal((await restored.inspect()).checkpoint.id, context.checkpointId);
-  assert.equal((await restored.prepare({ model: simpleModel, outputReserveTokens: 100 })).messages[0].synthetic, 'handoff');
+  assert.equal((await restored.prepare({ strategy: 'portable', model: simpleModel, outputReserveTokens: 100 })).messages[0].synthetic, 'handoff');
 });

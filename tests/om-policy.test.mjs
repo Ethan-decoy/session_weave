@@ -1,0 +1,71 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { MemoryStore, SessionWeave } from '../dist/index.js';
+import { createOmWorkingMemory, RESEARCH_RETENTION_POLICY_V1, RESEARCH_RETENTION_POLICY_V2 } from '../dist/om.js';
+import { createOfflineOmModel } from '../examples/om-fixture.mjs';
+
+const history = Array.from({ length: 8 }, (_, index) => ({ id: `p${index}`, role: index % 2 ? 'assistant' : 'user', text: `Recorded evidence ${index}` }));
+const options = { strategy: 'portable', model: { id: 'actor', contextWindow: 1000, countTokens: (input) => input.messages.some((message) => message.synthetic === 'working-memory') ? 200 : 950 },
+  outputReserveTokens: 100, safetyMarginTokens: 0, keepRecentGroups: 2 };
+const create = (model, retentionPolicy) => createOmWorkingMemory({ model, modelId: 'fixture-policy@1', maxBatchTokens: 8000, observationTokens: 8000, maxOutputTokens: 4000, ...(retentionPolicy ? { retentionPolicy } : {}) });
+test('default V2 reaches the real Reflector with the replacement lead and unchanged Observer/shared rules', async () => {
+  const model = createOfflineOmModel(), workingMemory = create(model);
+  const session = await SessionWeave.open({ sessionId: 'policy', store: new MemoryStore(), workingMemory });
+  await session.append(history);
+  await session.prepare(options);
+  await session.prepare({ ...options, model: { ...options.model, countTokens: (input) => input.messages.some((message) => message.text.includes('Offline fixture memory 2')) ? 200 : 950 } });
+  assert.equal(model.calls.length, 2);
+  const replacement = 'Merge duplicate wording and condense procedural logs into findings, outcomes and remaining work. Keep conditions, failure details and recorded reasons that still affect continuation, including for older or completed work. Preserve the distinctions below while shortening their expression.';
+  assert.equal(RESEARCH_RETENTION_POLICY_V2.observationInstruction, RESEARCH_RETENTION_POLICY_V1.observationInstruction);
+  const shared = RESEARCH_RETENTION_POLICY_V1.reflectionInstruction.slice(RESEARCH_RETENTION_POLICY_V1.reflectionInstruction.indexOf('\n') + 1);
+  assert.equal(RESEARCH_RETENTION_POLICY_V2.reflectionInstruction, `Research retention policy v2 — reflection. ${replacement}\n${shared}`);
+  assert.ok(model.calls[0].some((message) => message.role === 'system' && message.content.includes(RESEARCH_RETENTION_POLICY_V2.observationInstruction)));
+  const reflection = model.calls[1].filter((message) => message.role === 'system').map((message) => message.content).join('\n');
+  assert.ok(reflection.includes(RESEARCH_RETENTION_POLICY_V2.reflectionInstruction));
+  assert.equal(reflection.split(replacement).length - 1, 1);
+  assert.doesNotMatch(RESEARCH_RETENTION_POLICY_V2.reflectionInstruction, /Do not replace member states with a collective success label/);
+  assert.match(workingMemory.identity.policy, /sessionweave\/research-retention@2/);
+  // These assert policy wiring, never semantic obedience by a real model.
+});
+test('policy version and both full texts affect identity; runtime policy is captured before callers mutate it', async () => {
+  const model = createOfflineOmModel();
+  const original = { id: 'host-policy@1', observationInstruction: 'Observe host evidence exactly.', reflectionInstruction: 'Reflect host evidence without erasing uncertainty.' };
+  const policy = { ...original }, memory = create(model, policy);
+  for (const key of ['id', 'observationInstruction', 'reflectionInstruction']) assert.notEqual(create(model, { ...original, [key]: `${original[key]} changed` }).identity.policy, memory.identity.policy);
+  policy.observationInstruction = 'Changed outside after construction.';
+  const session = await SessionWeave.open({ sessionId: 'policy', store: new MemoryStore(), workingMemory: memory });
+  await session.append(history);
+  const prepared = await session.prepare(options);
+  const saved = await session.read({ sessionId: session.sessionId, workingMemoryCheckpointId: prepared.checkpointId });
+  assert.deepEqual(saved.engineState.bundle.value.records[0].config.sessionweave.retentionPolicy, original);
+  assert.match(JSON.stringify(model.calls[0]), /Observe host evidence exactly/);
+  assert.doesNotMatch(JSON.stringify(model.calls[0]), /Changed outside/);
+  assert.throws(() => create(model, { ...original, reflectionInstruction: '' }), /both complete instruction texts/);
+});
+test('V1 keeps its persisted identity and resumes explicitly; default V2 rebuilds from raw without relabeling old state', async () => {
+  const store = new MemoryStore(), oldModel = createOfflineOmModel();
+  const legacy = create(oldModel, RESEARCH_RETENTION_POLICY_V1);
+  assert.equal(legacy.identity.policy, 'sync-sequence-utc-no-tool-clipping@2:sessionweave/research-retention@1:213591857a548ae70b1299dd3130532321a56581cffb5c38c249d0828db87bdf');
+  const session = await SessionWeave.open({ sessionId: 'policy', store, workingMemory: legacy });
+  await session.append(history);
+  const old = await session.prepare(options);
+  const checkpoint = await session.read({ sessionId: session.sessionId, workingMemoryCheckpointId: old.checkpointId });
+  const original = (await store.load(session.sessionId)).messages;
+  const pinned = await SessionWeave.open({ sessionId: session.sessionId, store, workingMemory: create(oldModel, RESEARCH_RETENTION_POLICY_V1) });
+  assert.equal((await pinned.prepare(options)).checkpointId, old.checkpointId);
+  assert.equal(oldModel.calls.length, 1);
+  const model = createOfflineOmModel();
+  const nextEngine = create(model);
+  assert.notEqual(nextEngine.identity.policy, legacy.identity.policy);
+  const reopened = await SessionWeave.open({ sessionId: session.sessionId, store, workingMemory: nextEngine });
+  const next = await reopened.prepare(options);
+  assert.notEqual(next.checkpointId, old.checkpointId);
+  assert.equal(model.calls.length, 1);
+  const prompt = JSON.stringify(model.calls[0]);
+  assert.match(prompt, /Recorded evidence 0/);
+  assert.doesNotMatch(prompt, /Offline fixture memory 1/);
+  const saved = await reopened.read({ sessionId: session.sessionId, workingMemoryCheckpointId: next.checkpointId });
+  assert.deepEqual(saved.engineState.bundle.value.records[0].config.sessionweave.retentionPolicy, RESEARCH_RETENTION_POLICY_V2);
+  assert.deepEqual(await reopened.read({ sessionId: session.sessionId, workingMemoryCheckpointId: old.checkpointId }), checkpoint);
+  assert.deepEqual((await store.load(session.sessionId)).messages, original);
+});

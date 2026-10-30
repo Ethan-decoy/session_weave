@@ -13,10 +13,13 @@ type PiMessage =
 const zeroUsage = (): PiUsage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
 
 export function piModelProfile(model: PiModelInfo, countTokens: ModelProfile['countTokens'], counterRevision = 'v1'): ModelProfile {
-  return { id: `${model.provider}/${model.id}/${counterRevision}`, contextWindow: model.contextWindow, maxOutputTokens: model.maxTokens, countTokens };
+  return { id: `${model.provider}/${model.id}/${counterRevision}`, contextWindow: model.contextWindow, maxOutputTokens: model.maxTokens, countTokens,
+    nativeCompaction: { status: 'unknown', reason: 'Pi model metadata does not establish deployment-specific native compaction; resolve it through a raw protocol adapter or explicitly select portable.' },
+  };
 }
 /** Rebuilds portable public history; provider thinking/signatures are deliberately absent. */
 export function toPiContext<TTool>(input: ModelInput, model: PiModelInfo, tools: TTool[]): { systemPrompt: string; messages: PiMessage[]; tools: TTool[] } {
+  invariant(!('strategy' in input) || input.strategy === 'portable', 'Native state must use its raw protocol adapter, not the Pi text normalizer.');
   if ('modelId' in input) {
     invariant(typeof input.modelId === 'string' && input.modelId.startsWith(`${model.provider}/${model.id}/`), 'Prepare a new context for the selected Pi model before switching.');
     invariant('budget' in input && input.budget && typeof input.budget === 'object' && 'contextWindow' in input.budget

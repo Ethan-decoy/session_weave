@@ -5,7 +5,7 @@ import { SessionWeave, MemoryStore, ContextBudgetError, createJsonSummarizer } f
 export const tokenCount = (input) => Math.ceil((input.systemPrompt.length + JSON.stringify(input.tools).length
   + input.messages.reduce((total, message) => total + message.text.length + JSON.stringify(message.role === 'assistant' ? message.toolCalls ?? [] : []).length + 20, 0)) / 4);
 export const model = (contextWindow = 900, id = 'test/model/counter-v1') => ({ id, contextWindow, maxOutputTokens: 4000, countTokens: tokenCount });
-export const options = (extra = {}) => ({ model: model(), outputReserveTokens: 100, ...extra });
+export const options = (extra = {}) => ({ strategy: 'portable', model: model(), outputReserveTokens: 100, ...extra });
 export function summary(request) {
   return { complete: true, throughId: request.throughId, handoff: {
     version: 1,
