@@ -1,32 +1,109 @@
 # SessionWeave
 
-可嵌入的跨模型持续会话与上下文库，适合使用普通模型 API 的 Node.js 应用。提供不可变原始记录、按实际模型窗口规划上下文、可替换 AI 摘要、检查点恢复和原文引用回读。
+为模型 API 应用管理可恢复的会话、原始记录和上下文预算。
 
-需要 Node.js 22+ 和 npm，使用 TypeScript + ESM。可选 OM 入口要求 Node >=22.13 和固定 Mastra peers，开发安装包含这些验证依赖：
+SessionWeave 是一个 Node.js / TypeScript 库，可嵌入已有的模型调用流程：
+
+- **保存与恢复会话**：按明确的会话 ID 追加原始消息，独立保存检查点，重启后继续工作。
+- **准备模型上下文**：根据目标模型窗口、当前指令、工具和材料计算输入预算，保留近期完整的工具调用组。
+- **选择压缩路径**：使用已确认可用的原生压缩，或通过可替换的工作记忆引擎／摘要器整理历史。
+- **回读原始证据**：按消息引用读取完整记录，或在宿主提供的预算内连续分页。
+
+模型连接、鉴权和真实工具执行由宿主应用提供。
+
+## 项目状态
+
+当前为 private 开发预览，提供源码快照。`0.0.0` 是开发占位版本，尚未发布 npm 包；许可状态见[许可](#许可)。
+
+基础入口要求 Node.js 22+、ESM。使用 OM 入口，以及安装本仓库的全部开发依赖并执行完整验证，需要 **Node.js 22.13+**。
+
+## 从源码开始
+
+在已有的仓库 checkout 中安装依赖并构建：
 
 ```sh
 npm ci --ignore-scripts
-npm run typecheck
-npm test
-npm run example
-npm run example:native
-npm run example:om
-npm run example:raw
-npm run example:ticket
+npm run build
 ```
 
-离线示例使用确定性替身演示 portable 压缩，原生示例使用协议 fixture 检查完整窗口、状态重开和原文回读。它们不调用付费模型、不证明语义保真。接入真实模型时由宿主提供实际部署能力、有效计数器及调用。
+将下面的代码保存为仓库根目录的 `session-example.mjs`，执行 `node session-example.mjs`：
 
-主要接口是 `SessionWeave.open()`、`append()`、`prepare()`、`accept()`、`read()`、`inspect()`。API 路径默认按已确认的实际部署能力选择原生；缺少证据会抛出 `CAPABILITY_UNKNOWN`。宿主可显式选择 portable 基线，Pi 示例也要求明确这一选择。宿主继续负责提供商鉴权、材料选择、真实工具执行和操作幂等；恢复会话不会重新执行历史工具。
+```js
+import { SessionWeave, estimateInputTokens } from 'sessionweave';
+import { FileStore } from 'sessionweave/file-store';
 
-完整契约见 [接口说明](docs/api.md)，运行示例见 [quickstart](examples/quickstart.mjs)，已有 Pi AI 的应用可参考 [模型层接入示例](examples/qb-pi.mjs)。
+const session = await SessionWeave.open({
+  sessionId: 'readme-example',
+  store: new FileStore('.sessionweave/readme-example'),
+});
 
-原生适配器、`accept()` 及状态恢复见 [原生接口](docs/native-api.md) 和 [原生离线示例](examples/native-roundtrip.mjs)。适配器存在不证明某个实际提供商、模型或渠道可用，需单独核实配置和协议。
+await session.append([
+  { id: 'user-1', role: 'user', text: '保存这个会话，稍后继续。' },
+]);
 
-非原生路径可通过 [OM 工作记忆](docs/api.md#om-工作记忆与-prepare) 接入正式发布的 Observer／Reflector。完整包包含恢复状态与历史投影；prepare 在完整目标预算检查后原子发布，重开后继续增量更新。见 [OM 离线示例](examples/om-roundtrip.mjs)。同步、文本／JSON、单工具输出和取消等支持限制以接口文档为准。
+const context = await session.prepare({
+  strategy: 'portable',
+  model: {
+    id: 'offline-example',
+    contextWindow: 8192,
+    countTokens: estimateInputTokens,
+  },
+  outputReserveTokens: 1024,
+});
 
-默认研究保留政策的版本和正文进入记忆身份；只读 [readPage](docs/api.md#原文按预算分页) 可按宿主计数依据与工具结果预算连续呈现完整原文，支持长记录及跨进程续读。它不解除 OM 观察入口的大工具限制；单页预算也不等于最终模型上下文预算。见 [纯 core 分页示例](examples/raw-pages.mjs)。
+console.log(context.messages);
+```
 
-支持 [固定前缀候选预生成与显式采用](docs/api.md#固定前缀预生成与显式采用)，由新的 prepare 核对追加凭据／历史 base、使用当前请求配置重新计数并原子发布。ticket 不跨 open 实例或进程；已发布包携带完整 provenance 并可恢复。它不接管旧 actor 请求。见 [离线示例](examples/memory-ticket.mjs)。
+这个示例准备一个离线上下文，数据保存在本地 `.sessionweave/readme-example/`。再次运行会打开同一会话；复用相同消息 ID 和内容时，原文不会重复追加。需要重新开始时，使用新的会话 ID 和存储目录。
 
-当前为首轮 private 开发快照；`0.0.0` 是工程占位，没有正式版本、npm 发行或开源许可。支持文本和 JSON 工具消息，长期语义质量、真实提供商验证、多模态和大规模存储仍需后续完善。
+示例中的窗口是演示值，`estimateInputTokens` 按 JSON 的 UTF-8 字节估算。实际接入时，使用宿主选定模型的真实窗口、输出上限和请求计数器，并由宿主完成协议转换与模型调用。
+
+## 接入模型与工作记忆
+
+每次请求前调用 `prepare()`。默认的 `auto` 策略需要实际部署的原生能力证据；缺少证据会返回 `CAPABILITY_UNKNOWN`。上面的离线示例显式使用 `portable`。
+
+| 场景 | 接入方式 | 文档 |
+| --- | --- | --- |
+| 普通模型 API | 通过 `sessionweave` 准备上下文；宿主发送请求，再以准备时的 revision 追加真实响应 | [会话与预算](docs/api.md) |
+| 已核实原生压缩的部署 | `sessionweave/native` 提供原始协议适配器，用 `accept()` 保存完整响应和续传状态 | [原生接口](docs/native-api.md) |
+| 非原生工作记忆 | `sessionweave/om` 接入固定版本 Mastra Observer／Reflector，先验证最终上下文预算，再发布完整状态 | [OM 接入](docs/api.md#om-工作记忆与-prepare) |
+| Pi AI 宿主 | `sessionweave/pi` 转换公开消息、模型容量和用量 | [宿主契约](docs/api.md#pi-ai-与宿主契约)、[接入示例](examples/qb-pi.mjs) |
+
+OM 是可选入口，使用 `@mastra/core@1.79.0` 和 `@mastra/memory@1.39.0`，模型实例由宿主提供。本文的源码安装包含这些开发验证依赖；基础入口不会加载 Mastra。
+
+原始消息、原生状态和工作记忆检查点各自保留。恢复会话不会执行历史工具，工具副作用的去重与核对由宿主管理。
+
+## 示例与文档
+
+所有示例都离线运行，无需 API 密钥：
+
+| 命令 | 展示内容 |
+| --- | --- |
+| `npm run example` | 确定性摘要、文件持久化、检查点恢复与原文回读 |
+| `npm run example:native` | 协议 fixture 下的完整原生窗口与续传状态 |
+| `npm run example:om` | 真实 OM runner 配合确定性模型替身的观察、反思与恢复 |
+| `npm run example:raw` | 完整原文按工具结果预算分页，支持长记录续读 |
+| `npm run example:ticket` | 固定前缀预生成候选，由新的请求显式采用 |
+
+进一步阅读：
+
+- [API 参考](docs/api.md)：预算、工具配对、并发、存储与错误。
+- [原生 API](docs/native-api.md)：能力证据、请求提交、状态恢复与迁移。
+- [原文分页](docs/api.md#原文按预算分页)：完整记录的预算化呈现和游标。
+- [候选预生成与采用](docs/api.md#固定前缀预生成与显式采用)：来源见证、追加凭据和发布修订。
+
+## 支持范围
+
+当前支持文本和明确命名的 JSON 工具消息。`MemoryStore` 用于内存会话，`FileStore` 用于本地文件持久化；文件存储按会话全量加载，不提供数据库索引、加密或自动回收。
+
+预算不足、工具结果未齐全或请求修订过期时会明确失败，原始记录继续保留。OM 的输入格式、输出完整性和取消条件见 [OM 支持说明](docs/api.md#om-工作记忆与-prepare)。
+
+现有测试和示例验证协议、预算、恢复及发布条件。真实提供商兼容性与长期语义质量仍需针对实际接入场景验证。
+
+## 贡献与问题反馈
+
+问题复现、开发环境、检查命令和贡献集成方式见 [贡献指南](CONTRIBUTING.md)。
+
+## 许可
+
+项目尚未选择开源许可证，当前 [package.json](package.json) 标为 `UNLICENSED`。
