@@ -1,10 +1,18 @@
 {
   "name": "sessionweave",
-  "version": "0.0.0",
+  "version": "0.1.0-beta.1",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",
   "description": "Model-agnostic persistent sessions and validated context compaction",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ethan-decoy/session_weave.git"
+  },
+  "homepage": "https://github.com/Ethan-decoy/session_weave#readme",
+  "bugs": {
+    "url": "https://github.com/Ethan-decoy/session_weave/issues"
+  },
   "engines": {
     "node": ">=22"
   },
@@ -33,6 +41,7 @@
   "files": [
     "dist",
     "examples",
+    "CHANGELOG.md",
     "docs/api.md",
     "docs/native-api.md"
   ],
