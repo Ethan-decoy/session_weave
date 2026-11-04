@@ -67,7 +67,7 @@ console.log(context.messages);
 | 普通模型 API | 通过 `sessionweave` 准备上下文；宿主发送请求，再以准备时的 revision 追加真实响应 | [会话与预算](docs/api.md) |
 | 已核实原生压缩的部署 | `sessionweave/native` 提供原始协议适配器，用 `accept()` 保存完整响应和续传状态 | [原生接口](docs/native-api.md) |
 | 非原生工作记忆 | `sessionweave/om` 接入固定版本 Mastra Observer／Reflector，先验证最终上下文预算，再发布完整状态 | [OM 接入](docs/api.md#om-工作记忆与-prepare) |
-| Pi AI 宿主 | `sessionweave/pi` 转换公开消息、模型容量和用量 | [宿主契约](docs/api.md#pi-ai-与宿主契约)、[接入示例](examples/qb-pi.mjs) |
+| Pi AI 宿主 | `sessionweave/pi` 转换公开消息、模型容量和用量 | [宿主契约](docs/api.md#pi-ai-与宿主契约)、[接线模块](examples/pi-host.mjs) |
 
 OM 是可选入口，使用 `@mastra/core@1.79.0` 和 `@mastra/memory@1.39.0`，模型实例由宿主提供。本文的源码安装包含这些开发验证依赖；基础入口不会加载 Mastra。
 
@@ -75,7 +75,7 @@ OM 是可选入口，使用 `@mastra/core@1.79.0` 和 `@mastra/memory@1.39.0`，
 
 ## 示例与文档
 
-所有示例都离线运行，无需 API 密钥：
+以下五个可执行示例都离线运行，无需 API 密钥：
 
 | 命令 | 展示内容 |
 | --- | --- |
@@ -84,6 +84,8 @@ OM 是可选入口，使用 `@mastra/core@1.79.0` 和 `@mastra/memory@1.39.0`，
 | `npm run example:om` | 真实 OM runner 配合确定性模型替身的观察、反思与恢复 |
 | `npm run example:raw` | 完整原文按工具结果预算分页，支持长记录续读 |
 | `npm run example:ticket` | 固定前缀预生成候选，由新的请求显式采用 |
+
+各文件的用途见[示例导航](examples/README.md)。Pi 接线模块需要宿主注入连接与鉴权，OM fixture 为示例和测试提供离线模型替身。
 
 进一步阅读：
 

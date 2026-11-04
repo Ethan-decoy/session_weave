@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SessionWeave, MemoryStore } from '../dist/index.js';
 import { fromPiAssistant, toPiContext, piModelProfile, piUsage } from '../dist/pi.js';
-import { requestModelStep } from '../examples/qb-pi.mjs';
+import { requestModelStep } from '../examples/pi-host.mjs';
 
 const target = { id: 'target', provider: 'provider', api: 'openai-completions', contextWindow: 50000, maxTokens: 8000 };
 const response = (extra = {}) => ({ role: 'assistant', content: [{ type: 'text', text: 'Public answer' }, { type: 'thinking', thinking: 'Private nonportable reasoning' }], stopReason: 'stop', usage: { input: 10, output: 5, cacheRead: 20, cacheWrite: 3 }, ...extra });

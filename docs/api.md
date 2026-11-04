@@ -1,16 +1,16 @@
 # SessionWeave 接口与策略
 
-SessionWeave 是 Node.js 22+、ESM、TypeScript 可嵌入库。核心没有运行时第三方依赖，支持文本与 JSON 工具消息；宿主负责提供商鉴权、模型调用、真实工具执行及领域幂等。当前为 private 开发快照，`0.0.0` 仅是工程占位，不代表正式版本或 npm 发行，尚未授予开源许可。
+SessionWeave 是 Node.js 22+、ESM、TypeScript 可嵌入库。核心没有运行时第三方依赖，支持文本与 JSON 工具消息；宿主负责提供商鉴权、模型调用、真实工具执行及领域幂等。从源码安装及最小运行示例见 [README](../README.md)，完整开发环境需要 Node.js 22.13+。可执行离线流程、宿主接线和辅助模块见[示例导航](../examples/README.md)。
 
-```sh
-npm ci --ignore-scripts
-npm run typecheck
-npm test
-npm run example
-npm run example:native
-```
+## 按任务查阅
 
-两个示例均离线运行。`example` 用确定性摘要替身检查 portable 流程；`example:native` 用原始协议 fixture 检查完整原生窗口、状态提交及恢复。再次执行会恢复明确会话，不重复追加。它们不证明真实提供商可用或摘要语义保真。
+| 任务 | 参考 |
+| --- | --- |
+| 选择路径、记录消息和准备上下文 | [策略](#先选择策略)、[portable 流程](#显式-portable打开记录准备及回读) |
+| 核算窗口或配置通用摘要 | [模型预算](#模型预算)、[摘要与检查点](#摘要模型与检查点) |
+| 回读原文、处理工具或实现存储 | [原文分页](#原文按预算分页)、[工具与恢复](#工具与恢复) |
+| 接入工作记忆及预生成候选 | [完整包](#工作记忆完整包与发布)、[候选采用](#固定前缀预生成与显式采用)、[OM](#om-工作记忆与-prepare) |
+| 连接实际模型 | [Pi 与宿主](#pi-ai-与宿主契约)、[原生 API](native-api.md) |
 
 ## 先选择策略
 
@@ -136,7 +136,7 @@ await session.append([{ role: 'tool', callId: 'stable-call-id', name: 'host_tool
 
 ## 工作记忆完整包与发布
 
-首批实现提供 `publishWorkingMemory(candidate, {signal?})`，以及检查点回读。它保存一个完整、已经完成生成的候选，不调用 OM 或任何模型，不将观察文字转换为六组 Handoff。
+`publishWorkingMemory(candidate, {signal?})` 保存一个完整、已经完成生成的候选，支持通过检查点回读。它不调用 OM 或任何模型，不将观察文字转换为六组 Handoff。
 
 ```ts
 const before = await session.inspect(); // 在生成候选之前取得修订
@@ -245,7 +245,7 @@ prepare 首先复用身份兼容的已提交投影。请求超过 proactive 阈�
 
 省略 retentionPolicy 从旧默认 V1 切换到 V2 时，沿用上述身份不兼容处理：按需从原文重建，旧包仍保留，不给旧引擎状态换上 V2 标签。检查点／存储格式不变，也不增加压缩阶段或模型调用位置。这是指导取舍调整，不是已验证的语义质量提升。
 
-首版支持面及限制：
+当前支持面及限制：
 
 - 固定 thread scope、手动 supplied messages、同步观察与反思，关闭异步 buffer、检索、额外 extractor／索引／working-memory 回调。状态包保存全部代、完整线程／消息／marker、资源行、来源映射及 Date 路径。模型对象、函数、凭据不进入 JSON；初始化记录使用明确的 JSON 策略配置。
 - 候选使用新的 InMemoryStore；适配器在进程内全局串行执行、等待 settled，隔离同一 ID 的上游操作注册表。它不承诺与宿主自行创建的、使用相同 thread/record ID 的其他 OM 实例隔离。一个支持面外的活动／缓冲状态会被拒绝，不能直接导入任意外部 OM 数据库。
@@ -261,11 +261,11 @@ prepare 首先复用身份兼容的已提交投影。请求超过 proactive 阈�
 
 以上检查证明接线、覆盖边界、恢复、协议和发布条件；不证明 Observer／Reflector 保留了每个事实。长程语义质量、真实渠道和多模态仍需独立验证。原始存储与完整 OM 代仍随历史增长，当前按会话全量加载，不承诺存储有界。
 
-文件锁遇到活动写入或崩溃遗留时返回 `STORE_BUSY`，不会猜测过期并抢锁。只有确认写进程已退出后，宿主才可移除相应空 `write.lock` 目录再重试。首版不承诺网络文件系统或断电后的完整硬件持久性，也不提供加密、垃圾清理或数据库索引。一次加载读入整个明确会话，适用于首轮嵌入验证；大规模存储可在同一事务接口处替换。
+文件锁遇到活动写入或崩溃遗留时返回 `STORE_BUSY`，不会猜测过期并抢锁。只有确认写进程已退出后，宿主才可移除相应空 `write.lock` 目录再重试。当前不承诺网络文件系统或断电后的完整硬件持久性，也不提供加密、垃圾清理或数据库索引。一次加载读入整个明确会话；大规模存储可在同一事务接口处替换。
 
 ## Pi AI 与宿主契约
 
-[qb-pi.mjs](../examples/qb-pi.mjs) 展示显式 portable 路径中注入 Pi AI `complete()` 的接法，无需完整 Pi Agent、Codex 账号或 ACP。调用 `requestModelStep` 时必须传 `strategy: 'portable'`；未选择或选择 native 会在发送前拒绝。`piModelProfile` 使用目录中的实际窗口，并将原生能力标为 `unknown`；`toPiContext` 转换标准消息及配对结果；`fromPiAssistant` 只提取已完成的公开文本/工具调用；`piUsage` 转换完整输入用量。
+[pi-host.mjs](../examples/pi-host.mjs) 展示显式 portable 路径中注入 Pi AI `complete()` 的接法。模块导出 `openPiSession()` 和 `requestModelStep()`，由宿主导入使用。调用 `requestModelStep` 时必须传 `strategy: 'portable'`；未选择或选择 native 会在发送前拒绝。`piModelProfile` 使用目录中的实际窗口，并将原生能力标为 `unknown`；`toPiContext` 转换标准消息及配对结果；`fromPiAssistant` 只提取已完成的公开文本/工具调用；`piUsage` 转换完整输入用量。
 
 示例中的回调描述宿主连接层接口，不要求最终用户自行实现。API 鉴权、协议转换、渠道兼容和交互入口由宿主或已有连接层提供；实际模型窗口、有效 token 计数及原生能力也由该层传入。
 
@@ -273,6 +273,6 @@ Pi 的通用文本归一化不能作为原生块的无损通路。原生准备�
 
 切换 Pi 模型或容量更新后，需要用新的 `piModelProfile` 重新 `prepare`；桥接器会拒绝把旧的 prepared context 直接发送给另一模型或不同窗口。
 
-首版只支持文本及明确命名的 JSON 工具内容。图像等未支持的公开内容、截断响应、不完整工具参数会拒绝入库，避免悄悄丢失内容。供应商 namespaced tools 需先在连接层映射到明确名称，Pi bridge 不悄悄丢弃命名空间。流式显示草稿由宿主管理，完成消息是当前存储原子。跨提供商工具 ID 的合法化属于模型连接层，核心拒绝重用调用 ID。
+当前只支持文本及明确命名的 JSON 工具内容。图像等未支持的公开内容、截断响应、不完整工具参数会拒绝入库，避免悄悄丢失内容。供应商 namespaced tools 需先在连接层映射到明确名称，Pi bridge 不悄悄丢弃命名空间。流式显示草稿由宿主管理，完成消息是当前存储原子。跨提供商工具 ID 的合法化属于模型连接层，核心拒绝重用调用 ID。
 
-研究节点、来源报告版本、材料选择、正式成果和工具操作幂等继续由宿主负责。已有原生智能体会话及压缩时，宿主可直接选择原生路径，避免对同一历史重复管理。本轮没有跨仓库产品接入、真实付费模型验证或长期语义保真评分；这些不影响基础存储和协议验证的独立进行。
+材料选择、成果版本和领域工具的操作幂等由宿主负责。已有原生智能体会话及压缩时，宿主可直接选择原生路径，避免对同一历史重复管理。离线测试和示例用于检查存储、协议、预算及发布条件；真实提供商兼容性与长期语义质量需按实际部署单独验证。

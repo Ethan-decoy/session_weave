@@ -4,7 +4,7 @@
 import { SessionWeave, createJsonSummarizer } from '../dist/index.js';
 import { fromPiAssistant, piModelProfile, piUsage, toPiContext } from '../dist/pi.js';
 
-export async function openResearchSession({ sessionId, store, summaryModel, countTokens, complete, onEvent }) {
+export async function openPiSession({ sessionId, store, summaryModel, countTokens, complete, onEvent }) {
   const summarizer = createJsonSummarizer({
     model: piModelProfile(summaryModel, (input) => countTokens(summaryModel, input)),
     outputReserveTokens: Math.min(4000, summaryModel.maxTokens),

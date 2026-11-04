@@ -26,7 +26,7 @@ npm ci --ignore-scripts
 npm run check
 ```
 
-`check` 包含类型检查、构建和功能测试。与改动相关的离线示例可单独运行：
+`check` 包含类型检查、构建和功能测试。文件用途见[示例导航](examples/README.md)，与改动相关的离线示例可单独运行：
 
 ```sh
 npm run example
