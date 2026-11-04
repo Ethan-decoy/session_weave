@@ -1,8 +1,8 @@
 {
   "name": "sessionweave",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "description": "Model-agnostic persistent sessions and validated context compaction",
   "repository": {
@@ -42,6 +42,7 @@
     "dist",
     "examples",
     "CHANGELOG.md",
+    "LICENSE",
     "docs/api.md",
     "docs/native-api.md"
   ],

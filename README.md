@@ -13,16 +13,16 @@ SessionWeave 是一个 Node.js / TypeScript 库，可嵌入已有的模型调用
 
 ## 项目状态
 
-当前版本为 **`0.1.0-beta.1`**，是 private 预发布，提供源码和可安装的包附件，尚未发布 npm 包。版本内容与支持边界见[变更记录](CHANGELOG.md)，许可状态见[许可](#许可)。
+当前版本为 **`0.1.0-beta.2`**，是采用 MIT 许可的公开预发布，提供源码和可安装的包附件，尚未发布 npm 包。版本内容与支持边界见[变更记录](CHANGELOG.md)，许可正文见 [LICENSE](LICENSE)。
 
 基础入口要求 Node.js 22+、ESM。使用 OM 入口，以及安装本仓库的全部开发依赖并执行完整验证，需要 **Node.js 22.13+**。
 
 ## 使用预发布包
 
-从 [GitHub 预发布](https://github.com/Ethan-decoy/session_weave/releases/tag/v0.1.0-beta.1)下载 `sessionweave-0.1.0-beta.1.tgz` 和 `SHA256SUMS`。仓库保持 private，需要具有访问权限。核对附件的 SHA-256 后，在宿主项目安装下载的包：
+从 [GitHub 预发布](https://github.com/Ethan-decoy/session_weave/releases/tag/v0.1.0-beta.2)下载 `sessionweave-0.1.0-beta.2.tgz` 和 `SHA256SUMS`。核对附件的 SHA-256 后，在宿主项目安装下载的包：
 
 ```sh
-npm install ./sessionweave-0.1.0-beta.1.tgz
+npm install ./sessionweave-0.1.0-beta.2.tgz
 ```
 
 安装后可使用下方的相同包入口。需要 OM 时另行安装文档中固定版本的 peers，由宿主提供模型实例和鉴权。
@@ -118,4 +118,4 @@ OM 是可选入口，使用 `@mastra/core@1.79.0` 和 `@mastra/memory@1.39.0`，
 
 ## 许可
 
-项目尚未选择开源许可证，当前 [package.json](package.json) 标为 `UNLICENSED`。
+项目采用 [MIT 许可证](LICENSE)。依赖项保留各自的许可和声明。
