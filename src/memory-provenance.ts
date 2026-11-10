@@ -1,9 +1,7 @@
-import { createHash } from 'node:crypto';
 import { integer, invariant } from './errors.js';
-import { json } from './data.js';
+import { json, jsonDigest as digest } from './data.js';
 import type { SessionState, WorkingMemoryCheckpoint, WorkingMemoryProvenance } from './types.js';
 
-const digest = (value: unknown) => createHash('sha256').update(json(value)).digest('hex');
 export const memoryPublicationBase = (checkpoint: WorkingMemoryCheckpoint): number => checkpoint.version === 2 ? checkpoint.publishedFromRevision : checkpoint.sourceRevision;
 export const memoryDigest = (state: SessionState, through: number): string => digest({ sessionId: state.sessionId, messages: state.messages.slice(0, through) });
 function baseAt(state: SessionState, revision: number): WorkingMemoryProvenance['base'] {
@@ -16,6 +14,8 @@ function baseAt(state: SessionState, revision: number): WorkingMemoryProvenance[
 const metadataAt = (state: SessionState, revision: number) => digest({
   usage: state.usage.filter((usage) => usage.basis.revision < revision),
   appendLog: (state.appendLog ?? []).filter((receipt) => receipt.revision <= revision),
+  ...((state.materialRevisions ?? []).some((entry) => entry.revision <= revision)
+    ? { materialRevisions: state.materialRevisions!.filter((entry) => entry.revision <= revision) } : {}),
 });
 function rawCountAt(state: SessionState, revision: number): number {
   let count = state.messages.length;

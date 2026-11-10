@@ -1,13 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
 import { MemoryStore, SessionWeave } from '../dist/index.js';
 import { FileStore } from '../dist/file-store.js';
 import { createOmWorkingMemory } from '../dist/om.js';
 import { createOfflineOmModel } from '../examples/om-fixture.mjs';
+import { temporaryDirectory } from './helpers/temporary-directory.mjs';
 
 const raw = Array.from({ length: 8 }, (_, index) => ({ id: `m${index + 1}`, role: index % 2 ? 'assistant' : 'user', text: `Evidence identifier-${index + 1}` }));
 const options = { strategy: 'portable', model: { id: 'actor', contextWindow: 1000, countTokens: (input) => input.messages.some((message) => message.synthetic === 'working-memory') ? 200 : 950 },
@@ -128,12 +126,7 @@ test('the JSON date codec preserves ordinary ISO metadata and rejects unfinished
   assert.equal(model.calls.length, before);
 });
 test('FileStore reopens the real OM package in another process, reuses then updates without raw or tool replay', async (t) => {
-  const parent = path.resolve(os.tmpdir()), root = await mkdtemp(path.join(parent, 'sw-om-resume-'));
-  t.after(async () => {
-    assert.equal(path.dirname(path.resolve(root)), parent);
-    assert.ok(path.basename(root).startsWith('sw-om-resume-'));
-    await rm(root, { recursive: true, force: true });
-  });
+  const root = await temporaryDirectory(t, 'sw-om-resume-');
   const { session } = await open(createOfflineOmModel(), new FileStore(root));
   const prepared = await session.prepare(options);
   const modules = ['../dist/index.js', '../dist/file-store.js', '../dist/om.js', '../examples/om-fixture.mjs'].map((entry) => new URL(entry, import.meta.url).href);

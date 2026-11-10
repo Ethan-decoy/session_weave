@@ -1,10 +1,9 @@
-import { createHash } from 'node:crypto';
 import { SessionWeaveError, invariant, integer } from './errors.js';
-import { json } from './data.js';
+import { json, jsonDigest } from './data.js';
 import type { ModelProfile, PrepareOptions, SessionState } from './types.js';
 import type { NativeAdapter, NativeBinding, NativeCapability, NativeCheckpoint, NativeRequest, JsonObject } from './native-types.js';
 
-export const digest = (value: unknown): string => createHash('sha256').update(json(value)).digest('hex');
+export const digest = jsonDigest;
 export function nativeError(code: string, message: string): never { throw new SessionWeaveError(code, message); }
 export function object(value: unknown, label = 'Native value'): JsonObject {
   invariant(value && typeof value === 'object' && !Array.isArray(value), `${label} must be a JSON object.`);

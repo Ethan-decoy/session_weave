@@ -9,6 +9,36 @@ export type MessageInput = (
 ) & { id?: string };
 export type Message = MessageInput & { id: string; sequence: number; createdAt: string };
 export type Reference = { sessionId: string; startId: string; endId: string };
+/** Host-owned identity and revision; a revision replaces the entire earlier material. */
+export type MaterialUpdate = { id: string; version: string } & (
+  | { action: 'set'; text: string }
+  | { action: 'withdraw' }
+);
+/** Immutable source, ordered independently of raw messages; never backdated by the host. */
+export type MaterialRevision = MaterialUpdate & {
+  sequence: number;
+  revision: number;
+  afterSequence: number;
+  previousVersion: string | null;
+};
+export type MaterialProjection = {
+  /** Last committed material event, including withdrawals. */
+  throughSequence: number;
+  mode: 'timeline' | 'checkpoint' | 'current';
+  retainedRevisions: number;
+  totalRevisions: number;
+};
+/** Correlation only, never a usage estimate or a persisted billing record. */
+export type ModelCallContext = Readonly<{
+  sessionId: string;
+  sourceRevision: number;
+  checkpointId: string | null;
+  phase: 'summary' | 'working-memory' | 'observer' | 'reflector' | 'native-compaction';
+  modelId?: string;
+  throughId?: string;
+  /** Ephemeral invocation identity; absent on an engine's outer correlation scope. */
+  callId?: string;
+}>;
 /** A slice of canonical JSON for one complete raw Message; never a replacement raw record. */
 export type RawPage = {
   version: 1;
@@ -120,7 +150,7 @@ export type UsageBasis = {
 };
 export type UsageObservation = { basis: UsageBasis; inputTokens: number; outputTokens: number };
 export type SessionState = {
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
   sessionId: string;
   revision: number;
   messages: Message[];
@@ -130,13 +160,15 @@ export type SessionState = {
   workingMemoryCheckpoints?: WorkingMemoryCheckpoint[];
   /** Optional optimization receipts; missing history makes reuse fail closed. */
   appendLog?: AppendReceipt[];
+  materialRevisions?: MaterialRevision[];
 };
-export type Mutation = { messages?: Message[]; checkpoint?: Checkpoint; usage?: UsageObservation; nativeCheckpoint?: NativeCheckpoint; workingMemoryCheckpoint?: WorkingMemoryCheckpoint };
+export type Mutation = { messages?: Message[]; checkpoint?: Checkpoint; usage?: UsageObservation; nativeCheckpoint?: NativeCheckpoint; workingMemoryCheckpoint?: WorkingMemoryCheckpoint; materialRevisions?: MaterialRevision[] };
 /** Must atomically compare revision and append only; never mutate existing raw records. */
 export interface SessionStore {
   readonly supportsNativeState?: boolean;
   readonly supportsWorkingMemoryState?: boolean;
   readonly supportsWorkingMemoryProvenance?: boolean;
+  readonly supportsMaterialRevisions?: boolean;
   load(sessionId: string): Promise<SessionState | null>;
   commit(sessionId: string, expectedRevision: number, mutation: Mutation, signal?: AbortSignal): Promise<SessionState>;
 }
@@ -165,6 +197,7 @@ export type PrepareOptions = {
   workingMemoryTicket?: WorkingMemoryTicket;
   systemPrompt?: string;
   tools?: Json[];
+  /** Legacy request-scoped snapshots. For ordered durable revisions use updateMaterials(). */
   materials?: { id: string; text: string }[];
   outputReserveTokens: number;
   safetyMarginTokens?: number;
@@ -181,6 +214,7 @@ export type PreparedContext = ModelInput & {
   revision: number;
   modelId: string;
   checkpointId: string | null;
+  materialProjection?: MaterialProjection;
   budget: {
     contextWindow: number;
     inputTokens: number;
@@ -194,6 +228,7 @@ export type PreparedContext = ModelInput & {
 };
 export type SessionEvent =
   | { type: 'restored'; revision: number; messages: number; pendingCallIds: string[] }
+  | { type: 'materials-committed'; revision: number; throughSequence: number }
   | { type: 'compaction-started'; revision: number; throughId: string }
   | { type: 'compaction-committed'; revision: number; checkpointId: string }
   | { type: 'compaction-failed'; revision: number; error: unknown }

@@ -1,5 +1,6 @@
 export { SessionWeave } from './session.js';
 export { estimateInputTokens } from './context.js';
+export { getModelCallContext } from './model-call.js';
 export { SUMMARY_INSTRUCTIONS } from './handoff.js';
 export { MemoryStore } from './memory-store.js';
 export { createJsonSummarizer } from './json-summarizer.js';

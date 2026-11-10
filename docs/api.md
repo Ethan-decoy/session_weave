@@ -98,6 +98,61 @@ const page = await session.readPage(
 
 本页满足预算仅相对于宿主提供的计数依据和本页预算。宿主计算本轮剩余空间，并将返回的**整页**纳入最终模型请求的计数；单页成功不保证整个上下文满足窗口。模型是否主动回读、定位正确证据和正确使用证据尚无真实交互验证。source 表示实际原文位置，不是逐事实归因或自动检索保证。底层仍全量加载会话／范围，不改善长期存储规模。
 
+## 稳定身份与动态材料修订
+
+`prepare.materials: {id,text}[]` 保留原有的本轮快照语义，放在历史前方；修改它仍会改变较早的请求前缀。需要保持版本历史及生效顺序时，使用 `updateMaterials` 保存独立的材料修订，而不是把内容哈希当作材料身份反复替换快照：
+
+```ts
+await session.updateMaterials([
+  { id: 'reference', version: 'v1', action: 'set', text: originalReference },
+], { expectedRevision: (await session.inspect()).revision });
+const first = await session.prepare({ strategy: 'portable', model, outputReserveTokens: 4000 });
+// 发送 first，按其 revision 保存真实响应，完成全部真实工具结果。
+
+await session.updateMaterials([
+  { id: 'reference', version: 'v2', action: 'set', text: correctedReference },
+]);
+const next = await session.prepare({ strategy: 'portable', model, outputReserveTokens: 4000 });
+// 直接发送 next；不在 prepare 之后重排、补贴或拼接材料。
+
+await session.updateMaterials([{ id: 'reference', version: 'v3', action: 'withdraw' }]);
+const original = await session.read({ sessionId: session.sessionId, materialId: 'reference', version: 'v1' });
+```
+
+`id` 是宿主的稳定材料身份，`version` 是明确的内容修订身份（各限 512 字符）。每个 set 完全替代同一身份的旧内容，非增量补丁；withdraw 无 text，保留明确的撤回墓碑。已撤回材料可以用新的版本再次 set。它们只表达宿主选用的材料及其断言，不证明内容真伪，也不引入领域材料类别。
+
+每个批次单独原子提交，增加会话 revision，返回 `{revision,sequences}`。SW 捕获当时完整原文末尾作为 `afterSequence`，分配材料流中连续的 `sequence`，保存提交 `revision` 和同一身份的 `previousVersion`。宿主不能回填生效位置、改写原件或复用版本掩盖修改。材料是独立来源记录，不增加原始 Message 数，不伪装成用户原话。同一批次可以依次修订一个身份，顺序即生效顺序；未完成工具调用时禁止更新，以免拆开协议组。
+
+重复提交原有完整有序批次且内容一致时不增加修订；不同内容、批次部分重放、顺序变化或同批次重复版本会失败。重试历史批次只返回当前修订，不会重新激活旧版本。`expectedRevision` 为可选 CAS 条件；材料修改也会使尚未保存的旧 actor 响应失效。取消在提交点前生效，失败和修订冲突不部分发布材料。需要在消息与材料之间协调业务事务的宿主，应明确调度提交和请求，而非把两个存储事务当成一个。
+
+`inspect().materials` 返回每个身份最新的 `{id,version,action,sequence}`（含撤回）；`read({sessionId,materialId,version})` 回读完整不可变 `MaterialRevision`。可沿 previousVersion 追溯原件及生效位置，并与原始消息、历史决定及其当时理由核对。仅允许当前会话；返回防御副本。宿主可把这个读取入口接为只读工具，SW 不自动执行回读或检索。同一身份不得同时出现在新修订流与旧 `prepare.materials` 快照中。
+
+portable 默认把每个版本投影到其原文锚点之后。旧投影的 ID、文本及零值合成时间保持稳定；没有新版本时不新增消息。通常下一版本追加在已有请求尾部，保留已有输入前缀。每个投影明确：同一身份按顺序取最后生效版本，后续替换／撤回使旧材料及历史记忆中的旧材料断言仅作为历史证据，不能继续当作当前材料事实；历史决定的原始理由不因此重写。这是投影契约，不是模型语义遵从的证明。
+
+Handoff／OM 引擎继续只消费 canonical raw；材料不混入原文摘要、OM state 或工作记忆 sources。最终请求独立投影当前材料及其版本关系，旧记忆可能仍记载当时的断言和理由，须以材料修订的有效性说明核对。旧版本全文一直可回读。固定前缀 ticket 期间发生材料事务会破坏“仅追加原文”的证明，采用时返回 `REVISION_CONFLICT`，不能把旧候选视为已经处理新材料。
+
+最终结果在存在持久材料时附带 `materialProjection`：
+
+| 字段／模式 | 含义 |
+| --- | --- |
+| throughSequence | 最后一个已提交材料事件的序号，不是 raw sequence |
+| totalRevisions / retainedRevisions | 已存档修订数／实际投影修订数，含撤回 |
+| timeline | 保持材料事件顺序，正常请求不改写此前投影 |
+| checkpoint | 压缩覆盖范围内，同一材料的旧正文折叠为该范围末尾版本；范围之外仍按锚点追加 |
+| current | 材料历史造成预算压力时，仅投影各身份最后修订；撤回及原件身份仍保留 |
+
+折叠不会修改存档或删掉当前材料正文；保留版本仍在自己的可用锚点生效，已压缩的锚点移至历史投影之后。SW 对候选完整请求重新计数，仅在确实减少核算量时采用预算折叠，实际材料投影也参与 usage 校准身份。必要折叠、记忆更新、固定指令／工具变化或模型切换都可能改变前缀。当前材料、撤回及受保护输入仍装不下时明确返回 `CONTEXT_BUDGET`，不能用缓存需求阻止必要压缩或截断原件。不保证提供商缓存命中率；最终缓存还取决于真实序列化与服务端策略。
+
+当前原生适配器使用最新材料状态，修订变化后从 canonical raw 重建并标明 `origin:'rebuilt'`／`rebuildReason:'fixed-input-changed'`，不续用旧不透明检查点冒充新版本已生效。它们不承诺 portable 的逐锚点前缀复用；原文不完整或重建超出原生端点容量时失败，见[原生材料范围](native-api.md#材料修订与原生状态)。runtime 委托无法投影这套修订流，存在持久材料时拒绝委托。
+
+### 材料存储升级与降级恢复
+
+MemoryStore／FileStore 支持 `supportsMaterialRevisions: true`。自定义存储必须在同一 CAS 事务中追加 `Mutation.materialRevisions`，保留所有旧原文、检查点、用量与材料，声明能力后才可写入或打开材料存档；否则返回 `MATERIAL_STORAGE_UNSUPPORTED`。
+
+旧接口和 SessionState v1–v3／FileStore manifest v1–v4 继续兼容，尚未保存材料的会话按原格式写入。首次材料提交使用 SessionState v4，增加非空 materialRevisions 和原文 appendLog；manifest v5 引用 `materials/material-<sequence>-<sha256>.json` 中的完整原件，保留其他记录。来源字节哈希、顺序、前驱、事务修订和闭合原文锚点均验证；缺失或损坏的已提交来源报错，未引用的中断文件不生效。材料与 manifest 的原子发布方式与原文相同。
+
+旧版本读取器会拒绝这些新存档。升级前备份完整目录／数据库；降级需恢复升级前的完整备份，或由宿主显式迁移材料原件、建立新会话并核对有效版本。不能只降低版本号或丢弃材料数组。已发布的包、标签及附件不改写。
+
 ## 模型预算
 
 `ModelProfile` 包含明确的 `id`、真实 `contextWindow`、可选 `maxOutputTokens` 和 `countTokens(input)`。ID 应包含提供商、模型及计数器修订。计数器需计算最终发送的完整输入：系统指令、工具声明、材料、交接状态和活动消息；供应商特定序列化由连接层计算。
@@ -109,6 +164,51 @@ const page = await session.readPage(
 portable 的实际用量通过 assistant 响应的 `usage` 保存。只有模型/计数器、固定指令与材料、检查点和保留消息前缀兼容时，才用最近观测修正估计偏差；切模型或压缩后不会沿用旧窗口/旧用量。`inputTokens` 必须是包含缓存命中的完整输入量；Pi helper 将独立的 input、cacheRead、cacheWrite 合计。推理输出也需计入宿主设置的输出上限。原生响应的原始用量随完整响应归档，不套用这一校准规则。
 
 超过触发线且有合法历史范围时，`prepare()` 调用摘要模型。始终保留最新 user 原文和近期完整协议组。并行工具请求及其所有结果是一个组，不能被裁成孤儿结果。单条输入、工具组或固定材料过大时明确抛出 `CONTEXT_BUDGET`，保留原文，不截断或编造成功。
+
+## 内部压缩调用的真实用量观测
+
+注入的 SDK 模型已能观测每次 Observer／Reflector 的原始 finish usage，原生 compact transport 已能取得完整响应，JSON Summarizer 的宿主 generate 同样拥有原始模型响应。SW 不另建用量／计费账本；主回复与内部调用均由宿主包装模型／transport 后保存，避免把消息提交当作用量发生的唯一时点。
+
+`getModelCallContext()` 提供 SW 才掌握的请求局部关联元数据。应在包装器进入调用时捕获它，然后在响应／流事件处使用捕获值；不要在离开该调用范围后查询“最后一次调用”。它不进入模型输入、存档或缓存前缀，不包含材料／研究正文、请求头或鉴权：
+
+```ts
+import { getModelCallContext } from 'sessionweave';
+
+async function compactTransport(request, signal) {
+  const call = getModelCallContext();
+  // 宿主调用真实 endpoint，把原始 usage 和成功／失败／取消保存到独立观测系统。
+  // 之后 SW 的候选校验、预算或 CAS 失败，不撤销这次调用的观测。
+  return hostObservedCompact(request, { signal, call });
+}
+```
+
+| 元数据 | 语义 |
+| --- | --- |
+| sessionId / sourceRevision | 发起内部调用时的会话及输入修订，不是后来发布的新修订 |
+| phase | summary、observer、reflector、native-compaction；自定义工作记忆引擎外层为 working-memory |
+| modelId | 本次模型／设置身份；自定义 working-memory 外层未选择模型时缺失，模型包装器仍知道实际 provider/model |
+| checkpointId | 实际复用的前一检查点，重建或首次调用为 null；不把未发布候选当成新检查点 |
+| throughId | 本次处理的闭合原文范围终点（适用时） |
+| callId | 摘要、OM 实际 SDK 调用和原生 compact 的独立临时调用 ID；自定义引擎外层没有虚构的模型调用 ID |
+
+范围使用 Node AsyncLocalStorage 隔离并发调用。直接调用 OM derive 也获得其请求的会话、阶段及修订关联；宿主模型保持原方法 receiver，Observer／自动与手动 Reflector 分别标记。取消信号传入 OM 的 SDK 调用，与 SDK 自身信号合并。范围本身不持有流；包装器必须在 doStream 进入时捕获元数据，不能依赖流由哪个异步消费者读取。
+
+可复用的接线与完整离线演示见 [usage-observation.mjs](../examples/usage-observation.mjs)：
+
+- `observeOmModel(model, record)` 包装 SDK v2／v3／v4，按原样转发流，在 SW 输出完整性检查之前保留 finish usage，覆盖失败、取消和已发生用量但未发布的候选。
+- `observePiStream(start, record, {signal?,context?,usageOf?})` 在 Pi → SDK 转换之前观测原始流的 result promise，返回同一流对象，不额外消费 AsyncIterable。可保留分开的 input／cacheRead／cacheWrite／output，即使桥接层取消后先抛错、没有发出 SDK finish，稍后返回的用量仍可记录。
+- `observeTransport(transport, record, {usageOf?,usageOfError?,statusOf?,context?})` 返回完整原始响应。可按实际 transport 的响应／错误契约提取用量和结果状态，不能假设所有错误都带 usage。默认识别 response.status 的 failed／cancelled，其余取 Promise 结果；其他提供商的正常返回错误须提供 statusOf。
+- `record` 是宿主自己的记录回调。示例只提供接线，不是库内账本；部署时应独立持久化，不随 raw／checkpoint 事务回滚。记录回调失败不会改变原始模型结果。
+
+每个真实调用选择一个保存计费用量的观测层。若同时包装 Pi 和 SDK 用于调试，它们可能共享 callId，不能把两层观测重复累加为两次调用。
+
+记录中的状态表示模型／transport 调用的结果，不是检查点已发布的证明：完整响应之后的解析、预算、取消或修订冲突仍可能拒绝候选。保留 finishReason；截断输出的 usage 仍是真实消耗。失败、取消或缺少 finish 时，已观测字段保留，未知字段缺失；不能补 0 或把字符估计当作厂商计费用量。
+
+SDK 和各提供商的普通输入、缓存读取／写入、输出及推理细项按实际形状保留；不同协议字段语义由宿主核对，不能盲目相加。`UsageObservation` 继续只用于容量校准，inputTokens 必须是包含缓存的完整输入总量，不是未缓存计费输入。费用聚合独立处理；SW 不内置价目表，不把 API 价格换算为订阅额度。
+
+如果上游桥接已经合并缓存字段，SDK 外层包装无法恢复这些明细；应包装合并之前的 Pi stream 或最终 provider transport。Pi 示例标注 usageSource=pi-sdk，表示上游 SDK 报告值；SDK 自己的初始化零值、标准化字段及 cost 不等同于厂商原始计费证据，尤其不能直接用于订阅额度换算。需要精确区分未知字段时，在掌握原始响应的一层观测，或显式提供 usageOf，只返回实际已观测字段；SW 无法恢复上游已经丢失的信息。
+
+主 actor 调用由宿主发送，位于这些内部调用范围之外；宿主使用返回的 PreparedContext／NativePreparedContext 关联 sessionId、revision、modelId 和 checkpointId。原生 server-threshold 的服务端压缩也发生在主调用中，使用其真实响应 usage，不虚构一个 SW 内部 compact 调用。runtime 内部开销由对应运行时提供，SW 无法通过委托计划获得。上述接线及离线回归不验证真实厂商账单或订阅额度。
 
 ## 摘要模型与检查点
 

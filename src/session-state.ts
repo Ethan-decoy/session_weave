@@ -4,6 +4,7 @@ import { json, safeId } from './data.js';
 import { protocol } from './protocol.js';
 import { validateNativeCheckpoint } from './native.js';
 import { assertMemoryProvenance, memoryDigest, memoryPublicationBase } from './memory-provenance.js';
+import { validateMaterialHistory } from './materials.js';
 import type { Checkpoint, Handoff, Message, Mutation, SessionState, WorkingMemoryCandidate, WorkingMemoryCheckpoint } from './types.js';
 
 export function validateHandoff(value: unknown, messages: Message[], sessionId: string, through: number): asserts value is Handoff {
@@ -88,7 +89,7 @@ function validateWorkingMemory(checkpoint: WorkingMemoryCheckpoint, state: Sessi
 }
 
 export function validateState(state: SessionState): void {
-  invariant([1, 2, 3].includes(state?.version) && integer(state.revision), 'Unsupported or corrupt session state.');
+  invariant([1, 2, 3, 4].includes(state?.version) && integer(state.revision), 'Unsupported or corrupt session state.');
   emptyState(state.sessionId);
   invariant(Array.isArray(state.messages) && Array.isArray(state.checkpoints) && Array.isArray(state.usage), 'Session arrays are required.');
   const { ends } = protocol(state.messages);
@@ -126,10 +127,12 @@ export function validateState(state: SessionState): void {
   }
   invariant(state.workingMemoryCheckpoints === undefined || Array.isArray(state.workingMemoryCheckpoints), 'Invalid working-memory checkpoint collection.');
   const memories = state.workingMemoryCheckpoints ?? [];
-  invariant(state.version >= 2 ? memories.length > 0 : memories.length === 0, 'Working-memory state requires session format 2 or 3; it cannot be silently omitted.');
+  invariant(state.version === 4 || (state.version >= 2 ? memories.length > 0 : memories.length === 0), 'Working-memory state requires session format 2, 3 or 4; it cannot be silently omitted.');
   invariant(state.version === 3 ? memories.some((checkpoint) => checkpoint.version === 2) && Array.isArray(state.appendLog)
-    : memories.every((checkpoint) => checkpoint.version === 1), 'Provenance packages require session format 3 and append receipts.');
+    : state.version === 4 ? !memories.some((checkpoint) => checkpoint.version === 2) || Array.isArray(state.appendLog)
+      : memories.every((checkpoint) => checkpoint.version === 1), 'Provenance packages require session format 3 or 4 and append receipts.');
   invariant(state.appendLog === undefined || Array.isArray(state.appendLog), 'Invalid append receipt collection.');
+  invariant(state.version !== 4 || Array.isArray(state.appendLog), 'Material state requires explicit raw append receipts.');
   let lastAppendRevision = 0, lastAppendSequence = 0;
   for (const receipt of state.appendLog ?? []) {
     invariant(Object.keys(receipt).length === 3 && integer(receipt.revision) && receipt.revision > lastAppendRevision && receipt.revision <= state.revision
@@ -145,12 +148,21 @@ export function validateState(state: SessionState): void {
     memoryIds.add(checkpoint.id);
     previousMemory = checkpoint;
   }
+  validateMaterialHistory(state, ends);
   const publications = [...state.checkpoints.map((checkpoint) => checkpoint.sourceRevision + 1), ...(state.nativeCheckpoints ?? []).map((checkpoint) => checkpoint.sourceRevision + 1),
     ...memories.map((checkpoint) => memoryPublicationBase(checkpoint) + 1)];
-  invariant(new Set(publications).size === publications.length && !(state.appendLog ?? []).some((receipt) => publications.includes(receipt.revision)), 'A publication cannot also be an append-only transaction.');
+  const materialPublications = [...new Set((state.materialRevisions ?? []).map((entry) => entry.revision))];
+  invariant(new Set(publications).size === publications.length && !materialPublications.some((revision) => publications.includes(revision))
+    && !(state.appendLog ?? []).some((receipt) => publications.includes(receipt.revision) || materialPublications.includes(receipt.revision)), 'A publication cannot also be an append-only or material transaction.');
   json(state);
 }
 export function mutate(state: SessionState, mutation: Mutation): SessionState {
+  if (mutation.materialRevisions) {
+    invariant(Object.keys(mutation).length === 1 && mutation.materialRevisions.length > 0
+      && mutation.materialRevisions.every((entry) => entry.revision === state.revision + 1 && entry.afterSequence === state.messages.length),
+    'Publish material revisions alone at their observed raw boundary.');
+    invariant(protocol(state.messages).pending.length === 0, 'Complete all tool results before updating materials.');
+  }
   if (mutation.workingMemoryCheckpoint) {
     invariant(Object.keys(mutation).every((key) => key === 'workingMemoryCheckpoint')
       && memoryPublicationBase(mutation.workingMemoryCheckpoint) === state.revision, 'Publish a complete working-memory package alone at its observed revision.');
@@ -164,7 +176,8 @@ export function mutate(state: SessionState, mutation: Mutation): SessionState {
   }
   if (mutation.usage) invariant(mutation.usage.basis.revision === state.revision, 'Usage requires the exact request revision.');
   const next: SessionState = {
-    ...state, revision: state.revision + 1, version: mutation.workingMemoryCheckpoint?.version === 2 || state.version === 3 ? 3 : mutation.workingMemoryCheckpoint ? 2 : state.version,
+    ...state, revision: state.revision + 1, version: mutation.materialRevisions || state.version === 4 ? 4
+      : mutation.workingMemoryCheckpoint?.version === 2 || state.version === 3 ? 3 : mutation.workingMemoryCheckpoint ? 2 : state.version,
     messages: [...state.messages, ...(mutation.messages ?? [])],
     checkpoints: [...state.checkpoints, ...(mutation.checkpoint ? [mutation.checkpoint] : [])],
     usage: [...state.usage, ...(mutation.usage ? [mutation.usage] : [])],
@@ -172,6 +185,7 @@ export function mutate(state: SessionState, mutation: Mutation): SessionState {
     workingMemoryCheckpoints: [...(state.workingMemoryCheckpoints ?? []), ...(mutation.workingMemoryCheckpoint ? [mutation.workingMemoryCheckpoint] : [])],
     appendLog: [...(state.appendLog ?? []), ...(mutation.messages?.length && Object.keys(mutation).every((key) => ['messages', 'usage'].includes(key))
       ? [{ revision: state.revision + 1, startSequence: state.messages.length + 1, endSequence: state.messages.length + mutation.messages.length }] : [])],
+    ...(state.materialRevisions || mutation.materialRevisions ? { materialRevisions: [...(state.materialRevisions ?? []), ...(mutation.materialRevisions ?? [])] } : {}),
   };
   validateState(next);
   return structuredClone(next);

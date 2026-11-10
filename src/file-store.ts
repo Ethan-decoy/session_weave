@@ -2,13 +2,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, rm, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { RevisionConflictError, SessionWeaveError, invariant } from './errors.js';
-import { json, safeId } from './data.js';
+import { json, jsonDigest, safeId } from './data.js';
 import { emptyState, mutate, validateState } from './session-state.js';
-import type { AppendReceipt, Checkpoint, Message, Mutation, SessionState, SessionStore, UsageObservation, WorkingMemoryCheckpoint } from './types.js';
+import type { AppendReceipt, Checkpoint, MaterialRevision, Message, Mutation, SessionState, SessionStore, UsageObservation, WorkingMemoryCheckpoint } from './types.js';
 import type { NativeCheckpoint } from './native-types.js';
 
 type Manifest = {
-  version: 1 | 2 | 3 | 4;
+  version: 1 | 2 | 3 | 4 | 5;
   sessionId: string;
   revision: number;
   messages: string[];
@@ -17,17 +17,21 @@ type Manifest = {
   nativeCheckpoints?: string[];
   workingMemoryCheckpoints?: string[];
   appendLog?: AppendReceipt[];
+  materialRevisions?: string[];
 };
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
+const materialName = (entry: MaterialRevision) => `material-${entry.sequence}-${jsonDigest(entry)}`;
 
-// Manifests also version native records; logical state versions track working memory.
+// Manifests also version artifact references; logical state versions track memory/material capabilities.
 function stateVersion(version: Manifest['version']): SessionState['version'] {
+  if (version === 5) return 4;
   if (version === 4) return 3;
   if (version === 3) return 2;
   return 1;
 }
 
 function manifestVersion(state: SessionState): Manifest['version'] {
+  if (state.version === 4) return 5;
   if (state.version === 3) return 4;
   if (state.workingMemoryCheckpoints?.length) return 3;
   if (state.nativeCheckpoints?.length) return 2;
@@ -39,6 +43,7 @@ export class FileStore implements SessionStore {
   readonly supportsNativeState = true;
   readonly supportsWorkingMemoryState = true;
   readonly supportsWorkingMemoryProvenance = true;
+  readonly supportsMaterialRevisions = true;
   private readonly root: string;
   constructor(root: string) {
     this.root = path.resolve(root);
@@ -58,15 +63,17 @@ export class FileStore implements SessionStore {
       throw error;
     }
     invariant(
-      [1, 2, 3, 4].includes(manifest.version) && manifest.sessionId === id
+      [1, 2, 3, 4, 5].includes(manifest.version) && manifest.sessionId === id
       && Array.isArray(manifest.messages) && Array.isArray(manifest.checkpoints),
       'Invalid session manifest.',
     );
     invariant(manifest.nativeCheckpoints === undefined || Array.isArray(manifest.nativeCheckpoints), 'Invalid native checkpoint references.');
     invariant(manifest.version === 1 ? !manifest.nativeCheckpoints?.length : manifest.version === 2 ? !!manifest.nativeCheckpoints?.length : true, 'Invalid native manifest version.');
     invariant(manifest.workingMemoryCheckpoints === undefined || Array.isArray(manifest.workingMemoryCheckpoints), 'Invalid working-memory references.');
-    invariant(manifest.version >= 3 ? !!manifest.workingMemoryCheckpoints?.length : !manifest.workingMemoryCheckpoints?.length, 'Working-memory records require manifest version 3 or 4.');
-    invariant(manifest.version !== 4 || Array.isArray(manifest.appendLog), 'Provenance manifests require explicit append receipts.');
+    invariant(manifest.version === 5 || (manifest.version >= 3 ? !!manifest.workingMemoryCheckpoints?.length : !manifest.workingMemoryCheckpoints?.length), 'Working-memory records require manifest version 3, 4 or 5.');
+    invariant(manifest.version < 4 || Array.isArray(manifest.appendLog), 'Provenance and material manifests require explicit append receipts.');
+    invariant(manifest.materialRevisions === undefined || Array.isArray(manifest.materialRevisions), 'Invalid material revision references.');
+    invariant(manifest.version === 5 ? !!manifest.materialRevisions?.length : !manifest.materialRevisions?.length, 'Material revisions require manifest version 5.');
     const read = async <T>(kind: string, item: string): Promise<T> => {
       safeId(item);
       const value = JSON.parse(await readFile(path.join(directory, kind, `${item}.json`), 'utf8'));
@@ -83,6 +90,14 @@ export class FileStore implements SessionStore {
       usage: manifest.usage,
       nativeCheckpoints: await Promise.all((manifest.nativeCheckpoints ?? []).map((item) => read<NativeCheckpoint>('native-checkpoints', item))),
       workingMemoryCheckpoints: await Promise.all((manifest.workingMemoryCheckpoints ?? []).map((item) => read<WorkingMemoryCheckpoint>('working-memory', item))),
+      ...(manifest.version === 5 ? { materialRevisions: await Promise.all(manifest.materialRevisions!.map(async (item, index) => {
+        invariant(typeof item === 'string' && new RegExp(`^material-${index + 1}-[a-f0-9]{64}$`, 'u').test(item), 'Material revision references must retain their sequence and content identity.');
+        const contents = await readFile(path.join(directory, 'materials', `${item}.json`), 'utf8');
+        invariant(item.endsWith(createHash('sha256').update(contents).digest('hex')), 'Material source content digest does not match its manifest reference.');
+        const entry = JSON.parse(contents) as MaterialRevision;
+        invariant(entry.sequence === index + 1 && item === materialName(entry), 'Material source must retain its sequence and canonical record encoding.');
+        return entry;
+      })) } : {}),
     };
     validateState(state);
     return state;
@@ -130,6 +145,13 @@ export class FileStore implements SessionStore {
       if (mutation.checkpoint) await persist('checkpoints', mutation.checkpoint);
       if (mutation.nativeCheckpoint) await persist('native-checkpoints', mutation.nativeCheckpoint);
       if (mutation.workingMemoryCheckpoint) await persist('working-memory', mutation.workingMemoryCheckpoint);
+      for (const entry of mutation.materialRevisions ?? []) {
+        const folder = path.join(directory, 'materials');
+        await mkdir(folder, { recursive: true, mode: 0o700 });
+        const contents = json(entry), file = path.join(folder, `${materialName(entry)}.json`);
+        try { await this.write(file, contents); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || await readFile(file, 'utf8') !== contents) throw error; }
+      }
       const manifest: Manifest = {
         version: manifestVersion(next),
         sessionId: id,
@@ -140,6 +162,7 @@ export class FileStore implements SessionStore {
         usage: next.usage,
         nativeCheckpoints: (next.nativeCheckpoints ?? []).map((checkpoint) => checkpoint.id),
         workingMemoryCheckpoints: (next.workingMemoryCheckpoints ?? []).map((checkpoint) => checkpoint.id),
+        ...(next.version === 4 ? { materialRevisions: next.materialRevisions!.map(materialName) } : {}),
       };
       await this.write(temporary, json(manifest));
       signal?.throwIfAborted();

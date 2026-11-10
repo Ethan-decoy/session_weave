@@ -4,6 +4,7 @@ import { json } from './data.js';
 import { countInputTokens, inputLimit, syntheticMessage } from './context.js';
 import { protocol } from './protocol.js';
 import { validateHandoff } from './session-state.js';
+import { withModelCall } from './model-call.js';
 import type { Checkpoint, Handoff, ModelInput, SessionState, Summarizer, SummaryRequest } from './types.js';
 
 export const SUMMARY_INSTRUCTIONS = `Create a portable work handoff from the previous handoff and the new raw history.
@@ -63,7 +64,9 @@ export async function compactHandoff(
     if (!request) throw new ContextBudgetError('A complete protocol group plus prior handoff cannot fit the summary model. Raw data and the previous checkpoint are retained.');
     reflow = false;
     signal?.throwIfAborted();
-    const result = await summarizer.summarize(structuredClone(request), signal);
+    const result = await withModelCall({ sessionId: state.sessionId, sourceRevision: state.revision, phase: 'summary',
+      modelId: summarizer.model.id, checkpointId: rebuildFromRaw ? null : previous?.id ?? null, throughId: request.throughId },
+    () => summarizer.summarize(structuredClone(request!), signal));
     signal?.throwIfAborted();
     invariant(result?.complete === true && result.throughId === request.throughId, 'Incomplete summary or incorrect coverage.');
     const end = state.messages.find((message) => message.id === request!.throughId)!.sequence;

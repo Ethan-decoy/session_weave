@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { MemoryStore, SessionWeave } from '../dist/index.js';
 import { FileStore } from '../dist/file-store.js';
 import { createOpenAINativeAdapter, createAnthropicNativeAdapter, confirmedNativeCapability, resolveAnthropicNativeCapability } from '../dist/native-adapters.js';
 import { toPiContext } from '../dist/pi.js';
+import { temporaryDirectory } from './helpers/temporary-directory.mjs';
 
 const backend = (extra = {}) => ({ provider: 'selected-provider', endpoint: 'https://selected.example/v1', model: 'selected-model', apiVersion: '2026-10-21', scope: 'selected-account', ...extra });
 const marker = { type: 'compaction', id: 'cmp_fixture', encrypted_content: 'opaque-ciphertext-MUST-roundtrip', extension: { preserved: true } };
@@ -388,8 +388,7 @@ test('Anthropic Models capability objects distinguish confirmed support, unsuppo
 });
 
 test('FileStore restores native ciphertext in a separate process, preserves raw files and upgrades only the manifest', async (t) => {
-  const parent = path.resolve(os.tmpdir()), root = await mkdtemp(path.join(parent, 'sw-native-'));
-  t.after(async () => { assert.equal(path.dirname(path.resolve(root)), parent); assert.ok(path.basename(root).startsWith('sw-native-')); await rm(root, { recursive: true, force: true }); });
+  const root = await temporaryDirectory(t, 'sw-native-');
   const store = new FileStore(root), session = await open({ store });
   const folder = path.join(root, createHash('sha256').update(session.sessionId).digest('hex'));
   const rawFile = path.join(folder, 'raw/original-user.json'), original = await readFile(rawFile);

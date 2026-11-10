@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { ContextBudgetError, RevisionConflictError, SessionWeaveError, invariant, integer } from './errors.js';
-import { json } from './data.js';
+import { json, jsonDigest } from './data.js';
 import { protocol } from './protocol.js';
 import { createWorkingMemoryCheckpoint, emptyState, mutate, validateState } from './session-state.js';
 import { PortableContextBuilder } from './context.js';
@@ -9,15 +9,16 @@ import { assertPortableHistory, nativeError, selectCompactionStrategy } from './
 import { acceptNativeResponse, prepareNativeContext } from './native-session.js';
 import { presentRawPage } from './raw-page.js';
 import { captureMemoryProvenance, memoryDigest, memoryPublicationBase } from './memory-provenance.js';
+import { materialHeads, planMaterialUpdates, validateMaterialUpdates } from './materials.js';
+import { withMemoryContext } from './model-call.js';
 import type { NativeCheckpoint, NativePlan, NativePreparedContext, NativeReceipt, RuntimePlan, RuntimePrepareOptions } from './native-types.js';
 import type {
-  Checkpoint, Message, MessageInput, PreparedContext, PrepareOptions, RawPage, ReadPageOptions,
+  Checkpoint, MaterialRevision, MaterialUpdate, Message, MessageInput, PreparedContext, PrepareOptions, RawPage, ReadPageOptions,
   Reference, SessionEvent, SessionState, SessionStore, Summarizer, UsageObservation,
   WorkingMemoryCandidate, WorkingMemoryCheckpoint, WorkingMemoryEngine, WorkingMemoryIdentity,
   WorkingMemoryProvenance, WorkingMemoryReceipt, WorkingMemoryTicket,
 } from './types.js';
 
-const hash = (value: unknown) => createHash('sha256').update(json(value)).digest('hex');
 const lastCheckpoint = (state: SessionState) => state.checkpoints.at(-1);
 type MemoryTicketPlan = { candidate: WorkingMemoryCandidate; provenance: WorkingMemoryProvenance; sourceDigest: string; identity: WorkingMemoryIdentity; used: boolean };
 type MemoryInfo = Pick<WorkingMemoryCheckpoint, 'id' | 'identity' | 'sourceRevision' | 'sourceThroughSequence' | 'activeThroughSequence' | 'version'> & { publishedFromRevision: number };
@@ -27,6 +28,12 @@ function previousMemory(state: SessionState, identity: WorkingMemoryIdentity): W
     && (state.nativeCheckpoints?.at(-1)?.sourceRevision ?? -1) <= memoryPublicationBase(previous) ? previous : null;
 }
 const abort = (signal?: AbortSignal) => signal?.throwIfAborted();
+
+/** The actor context and its capacity observation refer to the same publication. */
+function setPreparedRevision(context: PreparedContext, revision: number): void {
+  context.revision = revision;
+  context.usageBasis.revision = revision;
+}
 
 export class SessionWeave {
   private readonly nativePlans = new WeakMap<NativePreparedContext, NativePlan>();
@@ -52,20 +59,46 @@ export class SessionWeave {
     const state = await this.store.load(this.sessionId) ?? emptyState(this.sessionId);
     invariant(state.sessionId === this.sessionId, 'Store returned another session.');
     validateState(state);
-    if (state.version >= 2) this.requireWorkingMemoryStore(state.version === 3);
+    if (state.workingMemoryCheckpoints?.length) this.requireWorkingMemoryStore(state.workingMemoryCheckpoints.some((checkpoint) => checkpoint.version === 2));
+    if (state.materialRevisions?.length) this.requireMaterialStore();
     return structuredClone(state);
   }
   private requireWorkingMemoryStore(provenance = false): void {
     if (this.store.supportsWorkingMemoryState !== true) throw new SessionWeaveError('WORKING_MEMORY_STORAGE_UNSUPPORTED', 'Storage must support atomic complete working-memory records before reading or publishing them.');
     if (provenance && this.store.supportsWorkingMemoryProvenance !== true) throw new SessionWeaveError('WORKING_MEMORY_PROVENANCE_UNSUPPORTED', 'Storage must preserve append receipts and provenance packages atomically before precomputation or adoption.');
   }
-  async inspect(): Promise<{ sessionId: string; revision: number; messageCount: number; checkpoint: Checkpoint | null; pendingCallIds: string[]; nativeCheckpoint: Pick<NativeCheckpoint, 'id' | 'binding' | 'throughSequence' | 'portableComplete'> | null; workingMemoryCheckpoint: MemoryInfo | null }> {
+  private requireMaterialStore(): void {
+    if (this.store.supportsMaterialRevisions !== true) throw new SessionWeaveError('MATERIAL_STORAGE_UNSUPPORTED', 'Storage must preserve immutable material revisions and raw anchors atomically before reading or updating them.');
+  }
+  async inspect(): Promise<{ sessionId: string; revision: number; messageCount: number; checkpoint: Checkpoint | null; pendingCallIds: string[]; nativeCheckpoint: Pick<NativeCheckpoint, 'id' | 'binding' | 'throughSequence' | 'portableComplete'> | null; workingMemoryCheckpoint: MemoryInfo | null; materials: Pick<MaterialRevision, 'id' | 'version' | 'action' | 'sequence'>[] }> {
     const state = await this.load();
     const native = state.nativeCheckpoints?.at(-1);
     const memory = state.workingMemoryCheckpoints?.at(-1);
     return { sessionId: this.sessionId, revision: state.revision, messageCount: state.messages.length, checkpoint: lastCheckpoint(state) ?? null, pendingCallIds: protocol(state.messages).pending,
       nativeCheckpoint: native ? { id: native.id, binding: native.binding, throughSequence: native.throughSequence, portableComplete: native.portableComplete } : null,
-      workingMemoryCheckpoint: memory ? { id: memory.id, version: memory.version, identity: memory.identity, sourceRevision: memory.sourceRevision, publishedFromRevision: memoryPublicationBase(memory), sourceThroughSequence: memory.sourceThroughSequence, activeThroughSequence: memory.activeThroughSequence } : null };
+      workingMemoryCheckpoint: memory ? { id: memory.id, version: memory.version, identity: memory.identity, sourceRevision: memory.sourceRevision, publishedFromRevision: memoryPublicationBase(memory), sourceThroughSequence: memory.sourceThroughSequence, activeThroughSequence: memory.activeThroughSequence } : null,
+      materials: materialHeads(state.materialRevisions ?? []).map(({ id, version, action, sequence }) => ({ id, version, action, sequence })) };
+  }
+  /** Commit material truth independently of actor messages, only at a closed protocol boundary. */
+  async updateMaterials(updates: MaterialUpdate[], options: { expectedRevision?: number; signal?: AbortSignal } = {}): Promise<{ revision: number; sequences: number[] }> {
+    const { expectedRevision, signal } = options;
+    this.requireMaterialStore();
+    abort(signal);
+    updates = structuredClone(updates);
+    validateMaterialUpdates(updates);
+    const state = await this.load(), plan = planMaterialUpdates(state, updates, expectedRevision);
+    if (plan.kind === 'replay') {
+      abort(signal);
+      return { revision: state.revision, sequences: plan.sequences };
+    }
+    const materialRevisions = plan.revisions, mutation = { materialRevisions };
+    mutate(state, mutation);
+    abort(signal);
+    const next = await this.store.commit(this.sessionId, state.revision, mutation, signal);
+    validateState(next);
+    invariant(next.revision === state.revision + 1 && json(next.materialRevisions) === json([...(state.materialRevisions ?? []), ...materialRevisions]), 'Storage did not preserve the complete material revision history.');
+    this.emit({ type: 'materials-committed', revision: next.revision, throughSequence: next.materialRevisions!.length });
+    return { revision: next.revision, sequences: materialRevisions.map((entry) => entry.sequence) };
   }
   /** Generate against a captured closed prefix without publishing or claiming an actor request. */
   async precomputeWorkingMemory(options: { throughId: string; reflow?: boolean; signal?: AbortSignal }): Promise<WorkingMemoryTicket> {
@@ -81,8 +114,9 @@ export class SessionWeave {
     const previous = previousMemory(state, identity);
     invariant(!previous || previous.sourceThroughSequence <= end, 'The fixed prefix must include the actual previous engine input.');
     const provenance = captureMemoryProvenance(state, previous), sourceDigest = memoryDigest(state, end);
-    const candidate = structuredClone(await engine.derive({ sessionId: this.sessionId, sourceRevision: state.revision,
-      messages: structuredClone(state.messages.slice(0, end)), previous: structuredClone(previous), reflow }, signal));
+    const candidate = structuredClone(await withMemoryContext({ sessionId: this.sessionId, sourceRevision: state.revision,
+      checkpointId: previous?.id ?? null, throughId }, () => engine.derive({ sessionId: this.sessionId, sourceRevision: state.revision,
+      messages: structuredClone(state.messages.slice(0, end)), previous: structuredClone(previous), reflow }, signal)));
     abort(signal);
     invariant(candidate.sourceRevision === state.revision && candidate.sourceThroughId === throughId && json(candidate.identity) === json(identity)
       && json(engine.identity) === json(identity), 'Precomputed engine returned another source or identity.');
@@ -126,7 +160,7 @@ export class SessionWeave {
       invariant(existing.every((message, index) => index === 0 || message!.sequence === existing[index - 1]!.sequence + 1), 'Replayed messages must retain their original contiguous order.');
       for (const [index, old] of existing.entries()) {
         const { sequence: _sequence, createdAt: _createdAt, ...original } = old!;
-        invariant(hash(original) === hash(inputs[index]), 'Message ID reused with different content.');
+        invariant(jsonDigest(original) === jsonDigest(inputs[index]), 'Message ID reused with different content.');
       }
       return { revision: state.revision, messageIds: existing.map((message) => message!.id) };
     }
@@ -145,9 +179,15 @@ export class SessionWeave {
   async read(reference: Reference): Promise<Message[]>;
   async read(reference: { sessionId: string; nativeCheckpointId: string }): Promise<NativeCheckpoint>;
   async read(reference: { sessionId: string; workingMemoryCheckpointId: string }): Promise<WorkingMemoryCheckpoint>;
-  async read(reference: Reference | { sessionId: string; nativeCheckpointId: string } | { sessionId: string; workingMemoryCheckpointId: string }): Promise<Message[] | NativeCheckpoint | WorkingMemoryCheckpoint> {
+  async read(reference: { sessionId: string; materialId: string; version: string }): Promise<MaterialRevision>;
+  async read(reference: Reference | { sessionId: string; nativeCheckpointId: string } | { sessionId: string; workingMemoryCheckpointId: string } | { sessionId: string; materialId: string; version: string }): Promise<Message[] | NativeCheckpoint | WorkingMemoryCheckpoint | MaterialRevision> {
     invariant(reference.sessionId === this.sessionId, 'Reference belongs to another session.');
     const state = await this.load();
+    if ('materialId' in reference) {
+      const material = state.materialRevisions?.find((entry) => entry.id === reference.materialId && entry.version === reference.version);
+      invariant(material, 'Material version does not exist in this session.');
+      return structuredClone(material);
+    }
     if ('workingMemoryCheckpointId' in reference) {
       const checkpoint = state.workingMemoryCheckpoints?.find((item) => item.id === reference.workingMemoryCheckpointId);
       invariant(checkpoint, 'Working-memory checkpoint does not exist in this session.');
@@ -186,6 +226,7 @@ export class SessionWeave {
       invariant(typeof options.runtime.evidence === 'string' && options.runtime.evidence.trim(), 'Runtime capability evidence is required.');
       const delegate = { id: options.runtime.id, sessionId: options.runtime.sessionId };
       const state = await this.load();
+      if (state.materialRevisions?.length) nativeError('UNSUPPORTED_STRATEGY', 'Runtime delegation cannot project committed material revisions. Select a portable/native API context or explicitly migrate materials into the external runtime.');
       return { strategy: 'runtime', sessionId: this.sessionId, revision: state.revision, delegate };
     }
     options = { ...options, model: { id: options.model.id, contextWindow: options.model.contextWindow,
@@ -244,8 +285,7 @@ export class SessionWeave {
         abort(options.signal);
         const next = await this.store.commit(this.sessionId, state.revision, { checkpoint: candidate }, options.signal);
         context = prepared;
-        context.revision = next.revision;
-        context.usageBasis.revision = next.revision;
+        setPreparedRevision(context, next.revision);
         this.emit({ type: 'compaction-committed', revision: next.revision, checkpointId: candidate.id });
       } catch (error) {
         this.emit({ type: 'compaction-failed', revision: context.revision, error });
@@ -283,8 +323,9 @@ export class SessionWeave {
       this.emit({ type: 'compaction-started', revision: context.revision, throughId });
       try {
         abort(options.signal);
-        const candidate = structuredClone(await engine.derive({ sessionId: this.sessionId, sourceRevision: state.revision,
-          messages: structuredClone(state.messages.slice(0, end)), previous: structuredClone(checkpoint ?? null), reflow }, options.signal));
+        const candidate = structuredClone(await withMemoryContext({ sessionId: this.sessionId, sourceRevision: state.revision,
+          checkpointId: checkpoint?.id ?? null, throughId }, () => engine.derive({ sessionId: this.sessionId, sourceRevision: state.revision,
+          messages: structuredClone(state.messages.slice(0, end)), previous: structuredClone(checkpoint ?? null), reflow }, options.signal)));
         abort(options.signal);
         invariant(candidate.sourceRevision === state.revision && candidate.sourceThroughId === throughId
           && json(candidate.identity) === json(engine.identity), 'Working-memory engine returned a different source or identity.');
@@ -295,8 +336,7 @@ export class SessionWeave {
         abort(options.signal);
         const next = await this.commitWorkingMemory(state, memory, options.signal);
         context = prepared;
-        context.revision = next.revision;
-        context.usageBasis.revision = next.revision;
+        setPreparedRevision(context, next.revision);
       } catch (error) {
         this.emit({ type: 'compaction-failed', revision: context.revision, error });
         throw error;
@@ -334,8 +374,7 @@ export class SessionWeave {
     plan.used = true;
     abort(options.signal);
     if ((await this.load()).revision !== next.revision) throw new RevisionConflictError();
-    context.revision = next.revision;
-    context.usageBasis.revision = next.revision;
+    setPreparedRevision(context, next.revision);
     return context;
   }
 }

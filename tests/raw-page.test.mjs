@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
 import { MemoryStore, SessionWeave } from '../dist/index.js';
 import { FileStore } from '../dist/file-store.js';
+import { temporaryDirectory } from './helpers/temporary-directory.mjs';
 
 const inputs = [
   { id: 'u', role: 'user', text: 'Question 💡 with newline\nand quoted "evidence". '.repeat(18) },
@@ -134,12 +132,7 @@ test('a large record remains resumable above the per-page rendering bound and te
   assert.equal(terminal.done, true);
 });
 test('a cursor continues in a new process without any engine, provider or revision token', async (t) => {
-  const parent = path.resolve(os.tmpdir()), root = await mkdtemp(path.join(parent, 'sw-raw-pages-'));
-  t.after(async () => {
-    assert.equal(path.dirname(path.resolve(root)), parent);
-    assert.ok(path.basename(root).startsWith('sw-raw-pages-'));
-    await rm(root, { recursive: true, force: true });
-  });
+  const root = await temporaryDirectory(t, 'sw-raw-pages-');
   const { session } = await open(new FileStore(root));
   const first = await session.readPage(reference, options);
   await session.append([{ id: 'new', role: 'user', text: 'Append without invalidating the old range.' }]);

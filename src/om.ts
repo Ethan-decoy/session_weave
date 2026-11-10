@@ -1,11 +1,12 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { MastraDBMessage } from '@mastra/core/agent';
 import { InMemoryStore, type MemoryStorage, type ObservationalMemoryRecord } from '@mastra/core/storage';
 import { ObservationalMemory, TokenCounter, formatMessagesForObserver, type ObservationalMemoryConfig } from '@mastra/memory/processors';
 import { ContextBudgetError, invariant, integer, SessionWeaveError } from './errors.js';
-import { json } from './data.js';
+import { json, jsonDigest as digest } from './data.js';
 import { protocol } from './protocol.js';
-import type { Json, Message, WorkingMemoryCandidate, WorkingMemoryEngine } from './types.js';
+import { withModelCall } from './model-call.js';
+import type { Json, Message, ModelCallContext, WorkingMemoryCandidate, WorkingMemoryEngine } from './types.js';
 
 /** Explicit SDK model instances only: no automatic provider selection or stored credentials. */
 export type OmModel = Extract<NonNullable<ObservationalMemoryConfig['model']>, { specificationVersion: 'v2' | 'v3' | 'v4' }>;
@@ -49,7 +50,6 @@ type Bundle = {
   resource: Awaited<ReturnType<MemoryStorage['getResourceById']>>;
 };
 type Encoded = { value: Json; dates: (string | number)[][] };
-const digest = (value: unknown) => createHash('sha256').update(json(value)).digest('hex');
 const ENGINE = '@mastra/memory@1.39.0+@mastra/core@1.79.0';
 const CODEC = 'sessionweave/om-sync-sequence@1';
 
@@ -145,7 +145,7 @@ function verifyFormatter(messages: MastraDBMessage[]): void {
 }
 type OmStreamResult = Awaited<ReturnType<OmModel['doStream']>>;
 type OmStreamPart = OmStreamResult['stream'] extends ReadableStream<infer Part> ? Part : never;
-function completeOutputModel(model: OmModel): { model: OmModel; check(): void } {
+function completeOutputModel(model: OmModel, context: () => Omit<ModelCallContext, 'callId'>, signal?: AbortSignal): { model: OmModel; check(): void } {
   let incomplete: SessionWeaveError | undefined;
   const check = () => { if (incomplete) throw incomplete; };
   // A separate facade also supports frozen models; methods/getters keep the SDK receiver.
@@ -154,7 +154,9 @@ function completeOutputModel(model: OmModel): { model: OmModel; check(): void } 
     if (key !== 'doStream') return typeof value === 'function' ? value.bind(model) : value;
     return async (...args: Parameters<OmModel['doStream']>) => {
       check();
-      const result = await Reflect.apply(value, model, args) as OmStreamResult;
+      signal?.throwIfAborted();
+      const callOptions = signal ? { ...args[0], abortSignal: args[0].abortSignal ? AbortSignal.any([args[0].abortSignal, signal]) : signal } : args[0];
+      const result = await withModelCall(context(), () => Reflect.apply(value, model, [callOptions])) as OmStreamResult;
       return { ...result, request: result.request, response: result.response,
         stream: result.stream.pipeThrough(new TransformStream<OmStreamPart, OmStreamPart>({
           transform(chunk, controller) {
@@ -249,7 +251,9 @@ export function createOmWorkingMemory(options: OmOptions): WorkingMemoryEngine {
         }
         if (delta.length) await storage.saveMessages({ messages: delta });
         let witnessed = false;
-        const completed = completeOutputModel(model);
+        let phase: 'observer' | 'reflector' = 'observer';
+        const completed = completeOutputModel(model, () => ({ sessionId, sourceRevision: request.sourceRevision,
+          checkpointId: previous?.id ?? null, phase, modelId: policy.modelId, throughId: messages[Math.max(end, cursor) - 1]!.id }), signal);
         const om = new ObservationalMemory({ storage, model: completed.model, scope: 'thread', retrieval: false, hookExecution: 'await',
           observation: { bufferTokens: false, bufferOnIdle: false, messageTokens: policy.maxBatchTokens,
             instruction: retentionPolicy.observationInstruction,
@@ -260,13 +264,14 @@ export function createOmWorkingMemory(options: OmOptions): WorkingMemoryEngine {
             modelSettings: { maxOutputTokens: policy.maxOutputTokens } },
           hooks: {
             beforeObservation: ({ messages: actual }) => {
+              phase = 'observer';
               signal?.throwIfAborted();
               invariant(!witnessed && json(actual.map((message) => message.id)) === json(delta.map((message) => message.id)), 'OM did not receive the exact SW sequence delta.');
               verifyFormatter(actual);
               witnessed = true;
             },
             afterObservation: ({ observations }) => { signal?.throwIfAborted(); completed.check(); verifyOutput(observations, 'Observer'); },
-            beforeReflection: () => { signal?.throwIfAborted(); completed.check(); },
+            beforeReflection: () => { phase = 'reflector'; signal?.throwIfAborted(); completed.check(); },
             afterReflection: ({ observations }) => { signal?.throwIfAborted(); completed.check(); verifyOutput(observations, 'Reflector'); },
             onReflectionEnd: ({ error }) => {
               // Manual reflect() otherwise converts a transform error into reflected:false.

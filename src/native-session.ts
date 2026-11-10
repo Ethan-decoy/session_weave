@@ -2,12 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { ContextBudgetError, RevisionConflictError, invariant, integer } from './errors.js';
 import { protocol } from './protocol.js';
 import { assertPortableHistory, countNative, digest, nativeError, sameBinding, validateBinding } from './native.js';
+import { assertMaterialSnapshots, materialHeads, materialText } from './materials.js';
+import { withModelCall } from './model-call.js';
 import type { Message, PrepareOptions, SessionEvent, SessionState, SessionStore } from './types.js';
 import type { NativeAdapter, NativeCheckpoint, NativePlan, NativePreparation, NativePreparedContext, NativeReceipt } from './native-types.js';
 
 export async function prepareNativeContext(state: SessionState, options: PrepareOptions, adapter: NativeAdapter, store: SessionStore, emit: (event: SessionEvent) => void): Promise<NativePreparation> {
   if (store.supportsNativeState !== true) nativeError('NATIVE_STORAGE_UNSUPPORTED', 'Storage must explicitly support atomic native checkpoints before selecting native compaction.');
   validateBinding(adapter.binding);
+  assertMaterialSnapshots(state, options.materials ?? []);
   const { model } = options;
   const safety = options.safetyMarginTokens ?? Math.ceil(model.contextWindow * 0.03);
   invariant(integer(model.contextWindow) && model.contextWindow > 0 && integer(options.outputReserveTokens) && options.outputReserveTokens > 0 && integer(safety), 'Invalid native model budget.');
@@ -18,7 +21,8 @@ export async function prepareNativeContext(state: SessionState, options: Prepare
   invariant(threshold > 0 && threshold <= 1 && Number.isFinite(threshold), 'Invalid native compaction ratio.');
   if (adapter.mode === 'server-threshold') invariant(integer(adapter.thresholdTokens!) && adapter.thresholdTokens! > 0 && adapter.thresholdTokens! < available, 'Provider compaction threshold must be below the selected model input budget.');
   const binding = structuredClone(adapter.binding);
-  const fixedHash = digest({ systemPrompt: options.systemPrompt ?? '', tools: options.tools ?? [], materials: options.materials ?? [] });
+  const fixedHash = digest({ systemPrompt: options.systemPrompt ?? '', tools: options.tools ?? [], materials: options.materials ?? [],
+    ...(state.materialRevisions?.length ? { materialRevisions: state.materialRevisions } : {}) });
   let before = state.nativeCheckpoints?.at(-1);
   const compatible = before && sameBinding(before.binding, binding) && before.fixedHash === fixedHash && !options.rebuildNativeFromRaw;
   let origin: NativePreparedContext['origin'] = compatible ? 'resumed' : before || state.checkpoints.length ? 'rebuilt' : 'raw';
@@ -31,7 +35,9 @@ export async function prepareNativeContext(state: SessionState, options: Prepare
     messages: structuredClone(state.messages.slice(nativeState?.throughSequence ?? 0)),
     state: nativeState ? structuredClone(nativeState.state) : null,
     systemPrompt: options.systemPrompt ?? '', tools: structuredClone(options.tools ?? []),
-    materials: structuredClone(options.materials ?? []), outputReserveTokens: options.outputReserveTokens,
+    materials: [...structuredClone(options.materials ?? []), ...materialHeads(state.materialRevisions ?? []).map((entry) => ({
+      id: entry.id, text: materialText(state.sessionId, entry),
+    }))], outputReserveTokens: options.outputReserveTokens,
   });
   let current = compatible ? before : undefined;
   let request = makeRequest(current);
@@ -42,7 +48,9 @@ export async function prepareNativeContext(state: SessionState, options: Prepare
     if (inputTokens > model.contextWindow - safety) throw new ContextBudgetError('Raw/native window is already too large for the compact endpoint. Choose an explicit migration/rebuild plan; no fallback or truncation was performed.');
     invariant(adapter.compact, 'On-demand native adapter requires a compact operation.');
     if ((await store.load(state.sessionId))?.revision !== state.revision) throw new RevisionConflictError();
-    const result = await adapter.compact(structuredClone(request), options.signal);
+    const result = await withModelCall({ sessionId: state.sessionId, sourceRevision: state.revision, phase: 'native-compaction',
+      modelId: model.id, checkpointId: compatible ? before?.id ?? null : null, throughId: state.messages.at(-1)!.id },
+    () => adapter.compact!(structuredClone(request), options.signal));
     options.signal?.throwIfAborted();
     const candidate: NativeCheckpoint = {
       id: randomUUID(), createdAt: new Date().toISOString(), sourceRevision: state.revision,
@@ -72,6 +80,8 @@ export async function prepareNativeContext(state: SessionState, options: Prepare
     strategy: 'native', id: randomUUID(), sessionId: state.sessionId, revision, modelId: model.id,
     binding, checkpointId: current?.id ?? null, origin,
     ...(rebuildReason ? { rebuildReason } : {}), request: structuredClone(request),
+    ...(state.materialRevisions?.length ? { materialProjection: { throughSequence: state.materialRevisions.length, mode: 'current' as const,
+      retainedRevisions: materialHeads(state.materialRevisions).length, totalRevisions: state.materialRevisions.length } } : {}),
     budget: { contextWindow: model.contextWindow, inputTokens, outputReserveTokens: options.outputReserveTokens, safetyMarginTokens: safety, remainingTokens: available - inputTokens },
   };
   const plan: NativePlan = {

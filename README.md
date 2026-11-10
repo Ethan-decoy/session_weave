@@ -6,26 +6,30 @@ SessionWeave 是一个 Node.js / TypeScript 库，可嵌入已有的模型调用
 
 - **保存与恢复会话**：按明确的会话 ID 追加原始消息，独立保存检查点，重启后继续工作。
 - **准备模型上下文**：根据目标模型窗口、当前指令、工具和材料计算输入预算，保留近期完整的工具调用组。
+- **维护材料版本**：按稳定身份保存材料修订及撤回，投影时尽量保留已有前缀，并可回读历史版本。
 - **选择压缩路径**：使用已确认可用的原生压缩，或通过可替换的工作记忆引擎／摘要器整理历史。
 - **回读原始证据**：按消息引用读取完整记录，或在宿主提供的预算内连续分页。
+- **关联内部调用用量**：为宿主的摘要、Observer／Reflector 和原生压缩观测提供阶段及修订关联。
 
 模型连接、鉴权和真实工具执行由宿主应用提供。
 
 ## 项目状态
 
-当前版本为 **`0.1.0-beta.2`**，是采用 MIT 许可的公开预发布，提供源码和可安装的包附件，尚未发布 npm 包。版本内容与支持边界见[变更记录](CHANGELOG.md)，许可正文见 [LICENSE](LICENSE)。
+当前源码版本为 **`0.1.0-beta.3`**，采用 MIT 许可，通过 GitHub 预发布提供源码和可安装的包附件，尚未发布 npm registry 包。版本内容与支持边界见[变更记录](CHANGELOG.md)，许可正文见 [LICENSE](LICENSE)。
 
 基础入口要求 Node.js 22+、ESM。使用 OM 入口，以及安装本仓库的全部开发依赖并执行完整验证，需要 **Node.js 22.13+**。
 
 ## 使用预发布包
 
-从 [GitHub 预发布](https://github.com/Ethan-decoy/session_weave/releases/tag/v0.1.0-beta.2)下载 `sessionweave-0.1.0-beta.2.tgz` 和 `SHA256SUMS`。核对附件的 SHA-256 后，在宿主项目安装下载的包：
+从 [GitHub 预发布](https://github.com/Ethan-decoy/session_weave/releases/tag/v0.1.0-beta.3)下载 `sessionweave-0.1.0-beta.3.tgz` 和 `SHA256SUMS`。核对附件的 SHA-256 后，在宿主项目安装下载的包：
 
 ```sh
-npm install ./sessionweave-0.1.0-beta.2.tgz
+npm install ./sessionweave-0.1.0-beta.3.tgz
 ```
 
 安装后可使用下方的相同包入口。需要 OM 时另行安装文档中固定版本的 peers，由宿主提供模型实例和鉴权。
+
+旧存档继续可读。启用持久材料修订前先备份；首次保存材料会采用新存档格式，自定义存储需先支持材料事务。降级恢复要求见[材料存储升级说明](docs/api.md#材料存储升级与降级恢复)。
 
 ## 从源码开始
 
@@ -85,7 +89,7 @@ OM 是可选入口，使用 `@mastra/core@1.79.0` 和 `@mastra/memory@1.39.0`，
 
 ## 示例与文档
 
-以下五个可执行示例都离线运行，无需 API 密钥：
+以下七个可执行示例都离线运行，无需 API 密钥：
 
 | 命令 | 展示内容 |
 | --- | --- |
@@ -94,6 +98,8 @@ OM 是可选入口，使用 `@mastra/core@1.79.0` 和 `@mastra/memory@1.39.0`，
 | `npm run example:om` | 真实 OM runner 配合确定性模型替身的观察、反思与恢复 |
 | `npm run example:raw` | 完整原文按工具结果预算分页，支持长记录续读 |
 | `npm run example:ticket` | 固定前缀预生成候选，由新的请求显式采用 |
+| `npm run example:materials` | 材料修订、撤回、前缀保留与历史版本回读 |
+| `npm run example:usage` | 内部 OM 调用的阶段关联与实际 usage 包装 |
 
 各文件的用途见[示例导航](examples/README.md)。Pi 接线模块需要宿主注入连接与鉴权，OM fixture 为示例和测试提供离线模型替身。
 

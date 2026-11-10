@@ -6,6 +6,7 @@ export class MemoryStore implements SessionStore {
   readonly supportsNativeState = true;
   readonly supportsWorkingMemoryState = true;
   readonly supportsWorkingMemoryProvenance = true;
+  readonly supportsMaterialRevisions = true;
   private readonly states = new Map<string, SessionState>();
   async load(id: string): Promise<SessionState | null> { return structuredClone(this.states.get(id) ?? null); }
   async commit(id: string, revision: number, mutation: Mutation, signal?: AbortSignal): Promise<SessionState> {

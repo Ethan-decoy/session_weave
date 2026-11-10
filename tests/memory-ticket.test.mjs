@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
-import os from 'node:os';
 import path from 'node:path';
 import { MemoryStore, SessionWeave } from '../dist/index.js';
 import { FileStore } from '../dist/file-store.js';
@@ -11,6 +10,7 @@ import { json } from '../dist/data.js';
 import { createOpenAINativeAdapter, confirmedNativeCapability } from '../dist/native-adapters.js';
 import { createOmWorkingMemory } from '../dist/om.js';
 import { createOfflineOmModel } from '../examples/om-fixture.mjs';
+import { temporaryDirectory } from './helpers/temporary-directory.mjs';
 
 const identity = { engine: 'ticket-fixture@1', codec: 'complete-json@1', policy: 'research@1' };
 const messages = Array.from({ length: 8 }, (_, index) => ({ id: `m${index + 1}`, role: index % 2 ? 'assistant' : 'user', text: `Original ${index + 1}` }));
@@ -42,11 +42,7 @@ async function strictCandidate(session, end = 4) {
 }
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 async function fileFixture(t, Store = FileStore) {
-  const parent = path.resolve(os.tmpdir()), root = await mkdtemp(path.join(parent, 'sw-ticket-'));
-  t.after(async () => {
-    assert.equal(path.dirname(path.resolve(root)), parent); assert.ok(path.basename(root).startsWith('sw-ticket-'));
-    await rm(root, { recursive: true, force: true });
-  });
+  const root = await temporaryDirectory(t, 'sw-ticket-');
   const folder = path.join(root, createHash('sha256').update('tickets').digest('hex'));
   return { root, folder, store: new Store(root) };
 }

@@ -1,4 +1,4 @@
-import type { Json, Message, MessageInput, PrepareOptions } from './types.js';
+import type { Json, MaterialProjection, Message, MessageInput, PrepareOptions } from './types.js';
 
 export type JsonObject = { [key: string]: Json };
 /** Actual selected deployment identity, not inferred from a model brand or compatible wire format. */
@@ -69,6 +69,8 @@ export type NativePreparedContext = {
   checkpointId: string | null;
   origin: 'raw' | 'resumed' | 'rebuilt';
   rebuildReason?: string;
+  /** Current-state rebuild; native adapters do not promise portable timeline prefix reuse. */
+  materialProjection?: MaterialProjection;
   request: NativeRequest;
   budget: { contextWindow: number; inputTokens: number; outputReserveTokens: number; safetyMarginTokens: number; remainingTokens: number };
 };

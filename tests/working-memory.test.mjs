@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { MemoryStore, SessionWeave } from '../dist/index.js';
 import { FileStore } from '../dist/file-store.js';
 import { createOpenAINativeAdapter, confirmedNativeCapability } from '../dist/native-adapters.js';
+import { temporaryDirectory } from './helpers/temporary-directory.mjs';
 
 const messages = [
   { id: 'u1', role: 'user', text: 'Original question' },
@@ -31,12 +31,7 @@ async function candidate(session, extra = {}) {
     sources: [{ sessionId: session.sessionId, startId: 'u1', endId: 'a1' }], ...extra };
 }
 async function fileFixture(t, Store = FileStore) {
-  const parent = path.resolve(os.tmpdir()), root = await mkdtemp(path.join(parent, 'sw-working-memory-'));
-  t.after(async () => {
-    assert.equal(path.dirname(path.resolve(root)), parent);
-    assert.ok(path.basename(root).startsWith('sw-working-memory-'));
-    await rm(root, { recursive: true, force: true });
-  });
+  const root = await temporaryDirectory(t, 'sw-working-memory-');
   const folder = path.join(root, createHash('sha256').update('memory-session').digest('hex'));
   return { root, folder, store: new Store(root) };
 }

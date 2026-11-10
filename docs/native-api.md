@@ -67,9 +67,21 @@ Anthropic on-demand 保存原响应作审计，但发送的消息只有 `{role:'
 
 完整原生结果不会转为六组 Handoff。标准公开文本和宿主 JSON 工具另外进入只追加原文；未知公开类型、引用等无法完整投影时保留原响应并标记 `portableComplete: false`，避免跨格式迁移时静默丢失。未实现显式解码的宿主工具类型会被拒绝。
 
+## 材料修订与原生状态
+
+`updateMaterials` 的持久修订流、历史回读及存储升级见 [通用材料接口](api.md#稳定身份与动态材料修订)。当前 OpenAI input-array、previous_response_id 和 Anthropic 适配器均使用每个材料身份最新的 set／withdraw 状态作为重建材料；不把各版本按原文锚点插入不透明窗口。
+
+固定输入摘要包含已提交材料修订。首次准备正常携带最新版本与撤回说明；材料不变时可续用匹配检查点。材料变化后，即使只有版本／撤回变化，也必须丢弃本次请求对旧不透明状态的续用，从完整 canonical raw 和最新材料重建，返回 `origin:'rebuilt'`、`rebuildReason:'fixed-input-changed'` 和 `checkpointId:null`（如本轮另行原生压缩成功，则关联该新检查点）。重建请求完整计数，随后响应或压缩照常 CAS 发布，旧存档保留。
+
+原生准备结果的 `materialProjection.mode` 为 current，说明投影最新状态，而不是 portable 的版本时间线。此路径允许前缀改变，不保证动态材料的缓存复用。任何已归档输出缺少完整公开投影时，材料变化也不能绕过迁移检查；原文过大而无法重建／压缩时明确失败。宿主不能把旧 checkpoint 再挂到新材料请求，或在 prepare 之后私自拼接材料。
+
+runtime 委托只提供外部会话标识，不能把 SW 材料流提交给那个运行时；存在持久材料时返回 `UNSUPPORTED_STRATEGY`。需要运行时材料时，先由宿主设计显式迁移和确认，不能把委托计划视为材料已生效。
+
 ## 计数、预算及错误
 
 适配器的 `countTokens(request, previousRawResponse?)` 必须计算有效原生输入，包括不透明状态、指令、工具和材料。不得以密文字节估计 token；也不能把提供商累计费用或 compaction iterations 的总量直接当作当前活动窗口。原始 usage 完整归档，如何得到当前有效计数由已核实的连接层负责。
+
+内部 on-demand compact 调用可在宿主注入的 transport 中观测完整真实 usage，并通过 `getModelCallContext()` 关联 native-compaction 阶段、会话、模型、来源修订和实际使用的前一检查点。即使响应随后未能发布，独立观测仍保留。server-threshold 的压缩发生在主请求中，应从该请求的实际响应记录额外字段；SW 不虚构另一次调用。接线示例及容量校准与费用观测的区别见[用量观测](api.md#内部压缩调用的真实用量观测)。
 
 窗口减输出预留和安全余量形成输入预算。on-demand 使用 `compactAt`（默认 0.85）触发，compact 的原始输入仍须能装入目标窗口，候选返回窗口也必须通过预算，才发布检查点。server-threshold 的阈值须低于可用输入预算，prepare 仍要求本轮有效输入不超限；库不会以预计将发生的压缩替代计数。超限不截断历史。
 

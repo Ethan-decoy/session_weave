@@ -1,6 +1,6 @@
 {
   "name": "sessionweave",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -55,7 +55,9 @@
     "example:native": "npm run build && node examples/native-roundtrip.mjs",
     "example:om": "npm run build && node examples/om-roundtrip.mjs",
     "example:raw": "npm run build && node examples/raw-pages.mjs",
-    "example:ticket": "npm run build && node examples/memory-ticket.mjs"
+    "example:ticket": "npm run build && node examples/memory-ticket.mjs",
+    "example:materials": "npm run build && node examples/material-revisions.mjs",
+    "example:usage": "npm run build && node examples/usage-observation.mjs"
   },
   "devDependencies": {
     "@mastra/core": "1.79.0",

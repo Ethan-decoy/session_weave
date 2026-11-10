@@ -1,6 +1,5 @@
-import { createHash } from 'node:crypto';
 import { ContextBudgetError, integer, invariant, SessionWeaveError } from './errors.js';
-import { json } from './data.js';
+import { json, jsonDigest } from './data.js';
 import type { Message, RawPage, ReadPageOptions, Reference } from './types.js';
 
 const FORMAT = 'sessionweave-message-json@1';
@@ -28,7 +27,7 @@ export async function presentRawPage(messages: Message[], range: Reference, opti
   invariant(integer(maxTokens) && typeof options.countTokens === 'function', 'A nonnegative page budget and an envelope token counter are required.');
   signal?.throwIfAborted();
   invariant(messages.length > 0 && messages[0]!.id === range.startId && messages.at(-1)!.id === range.endId, 'Raw page needs the entire selected immutable range.');
-  const digest = createHash('sha256').update(json({ format: FORMAT, range, messages })).digest('hex');
+  const digest = jsonDigest({ format: FORMAT, range, messages });
   const cursor = options.cursor === undefined ? undefined : parseCursor(options.cursor);
   const index = cursor ? messages.findIndex((message) => message.id === cursor.messageId) : 0;
   if (cursor && (cursor.digest !== digest || index < 0)) return invalidCursor();

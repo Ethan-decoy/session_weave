@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { invariant } from './errors.js';
 
 export function safeId(id: string): void {
@@ -20,4 +21,9 @@ export function json(value: unknown): string {
   return JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
     ? Object.fromEntries(Object.entries(item).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0))
     : item);
+}
+
+/** Hash canonical JSON; byte content and identifier hashes have separate encodings. */
+export function jsonDigest(value: unknown): string {
+  return createHash('sha256').update(json(value)).digest('hex');
 }
